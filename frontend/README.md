@@ -214,4 +214,47 @@ frontend/
 │  • Auto-sync            • IndexedDB       • Themes      │
 │  • Responsive           • Mobile-ready    • Performance │
 │                                                          │
-└─────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────
+
+# BizCore POS System
+
+A modern Point of Sale system with offline-first architecture and cloud synchronization.
+
+## Features
+- Offline-first architecture with IndexedDB
+- Real-time cloud sync with MongoDB
+- Customer management with loyalty points
+- Product inventory management
+- Multiple payment methods (cash, card, mobile, gift)
+- Installment and credit sale options
+- Receipt generation (print, email, SMS, WhatsApp)
+- Dark/light theme support
+
+## Tech Stack
+### Frontend
+- React 19
+- Vite
+- TailwindCSS
+- IndexedDB (local storage)
+- Cloudinary (image storage)
+
+### Backend
+- Node.js + Express
+- MongoDB Atlas
+- Cloudinary API
+- JWT Authentication
+
+## Installation
+
+### Prerequisites
+- Node.js v18+
+- MongoDB Atlas account
+- Cloudinary account
+
+### Backend Setup
+```bash
+cd backend
+npm install
+cp .env.example .env
+# Edit .env with your credentials
+npm run dev┘

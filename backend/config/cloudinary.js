@@ -1,13 +1,12 @@
-// backend/config/cloudinary.js
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const multer = require('multer');
+import { v2 as cloudinary } from 'cloudinary';
+import { CloudinaryStorage } from 'multer-storage-cloudinary';
+import multer from 'multer';
 
 // Configure Cloudinary
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'do2bbokxv',
+  api_key: process.env.CLOUDINARY_API_KEY || '885838516326599',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'PpaVX7vV4TSjyO39AOBzeRLDaxE'
 });
 
 // Configure storage for product images
@@ -45,7 +44,7 @@ const uploadProduct = multer({ storage: productStorage });
 const uploadReceipt = multer({ storage: receiptStorage });
 const uploadAvatar = multer({ storage: avatarStorage });
 
-module.exports = {
+export {
   cloudinary,
   uploadProduct,
   uploadReceipt,

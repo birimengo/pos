@@ -1,5 +1,4 @@
-// models/Transaction.js
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const transactionSchema = new mongoose.Schema({
   receiptNumber: { type: String, required: true, unique: true },
@@ -30,4 +29,10 @@ const transactionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model('Transaction', transactionSchema);
+// Add if you want updatedAt
+// transactionSchema.pre('save', function() {
+//   this.updatedAt = Date.now();
+// });
+
+const Transaction = mongoose.model('Transaction', transactionSchema);
+export default Transaction;

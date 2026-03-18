@@ -80,18 +80,20 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
   const handlePayment = async () => {
     setIsProcessing(true);
     
-    // Determine payment status and due date
-    let paymentStatus = 'completed';
+    // FIXED: Always use 'completed' as status to match MongoDB enum
+    // Store payment plan info in custom fields instead
     let paymentNotes = '';
     let dueDate = null;
+    let isInstallment = false;
+    let isCredit = false;
     
     if (amountPaid < total) {
       if (insufficientAction === 'installment') {
-        paymentStatus = 'installment';
-        paymentNotes = `Down payment: $${downPayment.toFixed(2)}, Remaining: $${remainingAmount.toFixed(2)} over ${installmentPeriod} months`;
+        isInstallment = true;
+        paymentNotes = `Installment plan: Down payment $${downPayment.toFixed(2)}, Remaining $${remainingAmount.toFixed(2)} over ${installmentPeriod} months`;
         dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // Default 30 days for first payment
       } else if (insufficientAction === 'credit') {
-        paymentStatus = 'credit';
+        isCredit = true;
         dueDate = customDueDate || calculateDueDate();
         const scheduleText = {
           'weekly': 'Weekly',
@@ -114,12 +116,17 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
         remaining: remainingAmount > 0 ? remainingAmount : 0,
         change: change > 0 ? change : 0,
         timestamp: new Date().toISOString(),
-        status: paymentStatus,
+        // Always use 'completed' for status to match MongoDB enum
+        status: 'completed',
         notes: paymentNotes,
         dueDate: dueDate,
         creditSchedule: insufficientAction === 'credit' ? creditPaymentSchedule : null,
-        stockAction: paymentStatus === 'completed' ? 'reduce' : 
-                    (paymentStatus === 'credit' ? 'reduce' : 'reserve') // Credit reduces stock, installment reserves
+        // Add flags for tracking payment type
+        isInstallment: isInstallment,
+        isCredit: isCredit,
+        // Determine stock action based on payment type
+        stockAction: (amountPaid >= total) ? 'reduce' : 
+                    (isCredit ? 'reduce' : 'reserve') // Credit reduces stock, installment reserves
       });
     }, 1500);
   };

@@ -26,7 +26,7 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      // Format customer data properly
+      // Format customer data properly for local storage - keep all fields including ID
       const customerData = transactionData.customer ? {
         id: transactionData.customer.id || transactionData.customer._id,
         name: transactionData.customer.name,
@@ -35,19 +35,40 @@ class TransactionService {
         loyaltyPoints: transactionData.customer.loyaltyPoints || 0
       } : null;
 
+      // Format items for local storage - keep product references
+      const items = transactionData.items.map(item => ({
+        productId: item.productId || item.id, // Keep product reference for local use
+        name: item.name,
+        sku: item.sku,
+        price: item.price,
+        quantity: item.quantity,
+        total: item.price * item.quantity
+      }));
+
       const transaction = {
-        ...transactionData,
+        receiptNumber: transactionData.receiptNumber,
         customer: customerData,
-        id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        synced: false,
-        syncRequired: true,
-        createdAt: new Date().toISOString(),
-        // Ensure payment status fields are included
-        status: transactionData.status || 'completed',
+        items: items,
+        subtotal: transactionData.subtotal,
+        discount: transactionData.discount || 0,
+        tax: transactionData.tax || 0,
+        total: transactionData.total,
+        paymentMethod: transactionData.paymentMethod || transactionData.method || 'Cash',
+        change: transactionData.change || 0,
+        notes: transactionData.notes || '',
+        // FIXED: Always use 'completed' for status to match MongoDB enum
+        status: 'completed',
+        // Store payment plan info in custom fields
         remaining: transactionData.remaining || 0,
         dueDate: transactionData.dueDate || null,
         creditSchedule: transactionData.creditSchedule || null,
-        paymentMethod: transactionData.paymentMethod || transactionData.method || 'Cash'
+        isInstallment: transactionData.isInstallment || false,
+        isCredit: transactionData.isCredit || false,
+        id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        synced: false,
+        syncRequired: true,
+        createdAt: transactionData.timestamp || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
 
       await db.saveTransaction(transaction);
@@ -112,7 +133,8 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       const all = await db.getAll('transactions');
-      return all.filter(t => t.status === 'installment' || t.status === 'credit');
+      // FIXED: Check custom flags instead of status
+      return all.filter(t => t.isInstallment || t.isCredit);
     } catch (error) {
       console.error('❌ Failed to get pending payments:', error);
       return [];
@@ -125,8 +147,9 @@ class TransactionService {
       const all = await db.getAll('transactions');
       const today = new Date();
       return all.filter(t => {
-        if (t.status === 'completed') return false;
+        // Only check transactions with due date that are not fully paid
         if (!t.dueDate) return false;
+        if (t.remaining <= 0) return false;
         return new Date(t.dueDate) < today;
       });
     } catch (error) {
@@ -163,49 +186,54 @@ class TransactionService {
 
       console.log('☁️ Syncing transaction to cloud:', transaction.id);
 
-      // IMPORTANT: Completely remove the customer.id field to avoid MongoDB ObjectId casting errors
-      // Only include customer name and email, no ID
+      // CRITICAL: Create a clean customer object WITHOUT the local id field
       const customerData = transaction.customer ? {
         name: transaction.customer.name,
-        email: transaction.customer.email || '',
-        // loyaltyPoints is optional as it might not be in the schema
+        email: transaction.customer.email || ''
       } : null;
 
-      // Format items - don't include productId at all
+      // Format items - IMPORTANT: Do NOT include productId to avoid ObjectId casting errors
       const items = transaction.items.map(item => ({
         name: item.name,
         sku: item.sku,
         price: item.price,
         quantity: item.quantity,
         total: item.price * item.quantity
-        // productId intentionally omitted to avoid casting errors
       }));
 
-      // Prepare transaction data for cloud - only include fields that exist in the schema
+      // Prepare transaction data for cloud - FIXED: Always use 'completed' for status
       const transactionData = {
         receiptNumber: transaction.receiptNumber,
-        // Only include customer if it has data
-        ...(customerData && { customer: customerData }),
         items: items,
         subtotal: transaction.subtotal,
         discount: transaction.discount || 0,
         total: transaction.total,
-        paymentMethod: transaction.paymentMethod || transaction.method || 'Cash',
+        paymentMethod: transaction.paymentMethod,
         change: transaction.change || 0,
-        status: transaction.status || 'completed',
-        // Add tax field if it exists in your schema
-        ...(transaction.tax && { tax: transaction.tax }),
-        // Add notes if they exist
-        ...(transaction.notes && { notes: transaction.notes }),
-        // Add timestamp
+        // FIXED: Always use 'completed' to match MongoDB enum
+        status: 'completed',
         createdAt: transaction.createdAt || new Date().toISOString()
       };
+
+      // Only add customer if it has data
+      if (customerData && Object.keys(customerData).length > 0) {
+        transactionData.customer = customerData;
+      }
+
+      // Add optional fields if they exist in the transaction
+      if (transaction.tax) {
+        transactionData.tax = transaction.tax;
+      }
+
+      if (transaction.notes) {
+        transactionData.notes = transaction.notes;
+      }
 
       console.log('📤 Sending transaction data to cloud:', {
         receiptNumber: transactionData.receiptNumber,
         hasCustomer: !!transactionData.customer,
-        itemsCount: transactionData.items.length,
-        data: transactionData
+        customerName: transactionData.customer?.name,
+        itemsCount: transactionData.items.length
       });
 
       // Send to cloud
@@ -234,6 +262,19 @@ class TransactionService {
       }
     } catch (error) {
       console.error('❌ Failed to sync transaction to cloud:', error);
+      
+      // Update transaction with sync error
+      try {
+        const transaction = await db.get('transactions', transactionId);
+        if (transaction) {
+          transaction.syncError = error.message;
+          transaction.lastSyncAttempt = new Date().toISOString();
+          await db.put('transactions', transaction);
+        }
+      } catch (updateError) {
+        console.error('Failed to update sync error:', updateError);
+      }
+      
       return { success: false, error: error.message };
     }
   }
@@ -302,8 +343,9 @@ class TransactionService {
         endOfDay.toISOString()
       );
 
-      const completed = transactions.filter(t => t.status === 'completed');
-      const pending = transactions.filter(t => t.status === 'credit' || t.status === 'installment');
+      // FIXED: Use custom flags instead of status
+      const completed = transactions.filter(t => !t.isInstallment && !t.isCredit);
+      const pending = transactions.filter(t => t.isInstallment || t.isCredit);
       
       const total = completed.reduce((sum, t) => sum + t.total, 0);
       const pendingTotal = pending.reduce((sum, t) => sum + (t.remaining || 0), 0);
@@ -334,7 +376,8 @@ class TransactionService {
         endDate.toISOString()
       );
 
-      const completed = transactions.filter(t => t.status === 'completed');
+      // FIXED: Use custom flags instead of status
+      const completed = transactions.filter(t => !t.isInstallment && !t.isCredit);
       const total = completed.reduce((sum, t) => sum + t.total, 0);
 
       // Group by day
@@ -349,7 +392,7 @@ class TransactionService {
             pending: 0
           };
         }
-        if (t.status === 'completed') {
+        if (!t.isInstallment && !t.isCredit) {
           dailyBreakdown[day].total += t.total;
           dailyBreakdown[day].count++;
         } else {
@@ -373,14 +416,15 @@ class TransactionService {
   async getTopProducts(limit = 10) {
     try {
       const transactions = await this.getAllTransactionsLocally();
-      const completed = transactions.filter(t => t.status === 'completed');
+      // FIXED: Use custom flags instead of status
+      const completed = transactions.filter(t => !t.isInstallment && !t.isCredit);
       const productSales = {};
 
       completed.forEach(t => {
         t.items.forEach(item => {
-          if (!productSales[item.id]) {
-            productSales[item.id] = {
-              id: item.id,
+          if (!productSales[item.productId || item.id]) {
+            productSales[item.productId || item.id] = {
+              id: item.productId || item.id,
               name: item.name,
               sku: item.sku,
               quantity: 0,
@@ -388,9 +432,10 @@ class TransactionService {
               transactions: 0
             };
           }
-          productSales[item.id].quantity += item.quantity;
-          productSales[item.id].revenue += item.price * item.quantity;
-          productSales[item.id].transactions += 1;
+          const key = item.productId || item.id;
+          productSales[key].quantity += item.quantity;
+          productSales[key].revenue += item.price * item.quantity;
+          productSales[key].transactions += 1;
         });
       });
 
@@ -406,7 +451,8 @@ class TransactionService {
   async getPaymentMethodsBreakdown(startDate, endDate) {
     try {
       const transactions = await this.getTransactionsByDateRange(startDate, endDate);
-      const completed = transactions.filter(t => t.status === 'completed');
+      // FIXED: Use custom flags instead of status
+      const completed = transactions.filter(t => !t.isInstallment && !t.isCredit);
       
       const breakdown = {};
       completed.forEach(t => {
@@ -440,7 +486,8 @@ class TransactionService {
         throw new Error('Transaction not found');
       }
 
-      if (transaction.status === 'completed') {
+      // Check if transaction is completed
+      if (transaction.remaining <= 0) {
         throw new Error('Transaction already completed');
       }
 
@@ -456,7 +503,9 @@ class TransactionService {
       });
 
       if (transaction.remaining <= 0) {
-        transaction.status = 'completed';
+        // Mark as completed but keep flags for history
+        transaction.isInstallment = false;
+        transaction.isCredit = false;
         transaction.completedAt = new Date().toISOString();
       }
 
@@ -515,7 +564,7 @@ class TransactionService {
         pending: pending.length,
         queueLength: queue.length,
         isOnline: navigator.onLine,
-        pendingPayments: all.filter(t => t.status === 'credit' || t.status === 'installment').length,
+        pendingPayments: all.filter(t => t.isInstallment || t.isCredit).length,
         overduePayments: (await this.getOverduePayments()).length
       };
     } catch (error) {

@@ -84,7 +84,7 @@ class CloudSyncService {
             }
           }
 
-          // Prepare product data
+          // Prepare product data - clean of local-only fields
           const productData = {
             name: product.name,
             sku: product.sku,
@@ -97,8 +97,8 @@ class CloudSyncService {
             location: product.location,
             reorderPoint: product.reorderPoint,
             description: product.description,
-            images,
-            mainImage: images.find(img => img.isMain)?.url || images[0]?.url
+            images: images.length > 0 ? images : (product.cloudImages || []),
+            mainImage: images.find(img => img.isMain)?.url || images[0]?.url || product.cloudMainImage
           };
 
           // Send to cloud
@@ -112,15 +112,20 @@ class CloudSyncService {
           if (result.success) {
             // Mark as synced locally
             product.synced = true;
+            product._id = result.product._id; // Store MongoDB _id
             product.cloudId = result.product._id;
-            await db.put('products', product);
+            product.lastSyncedAt = new Date().toISOString();
             
-            // Clean up local images
-            for (const localPath of product.localImages || []) {
-              const fileName = localPath.split('/').pop();
-              await opfs.deleteFile(fileName, 'products').catch(() => {});
+            // Clean up local images after successful upload
+            if (product.localImages?.length > 0) {
+              for (const localPath of product.localImages) {
+                const fileName = localPath.split('/').pop();
+                await opfs.deleteFile(fileName, 'products').catch(() => {});
+              }
+              product.localImages = []; // Clear local images array
             }
             
+            await db.put('products', product);
             pushed++;
           }
         } catch (error) {
@@ -135,6 +140,7 @@ class CloudSyncService {
     }
   }
 
+  // ==================== FIXED: pushCustomers with duplicate checking ====================
   async pushCustomers() {
     await this.ensureInitialized();
     
@@ -146,22 +152,200 @@ class CloudSyncService {
       
       for (const customer of unsyncedCustomers) {
         try {
-          let result;
+          // DEBUG: Log the raw customer object before cleaning
+          console.log('🔍 Raw customer from DB:', {
+            id: customer.id,
+            _id: customer._id,
+            name: customer.name,
+            email: customer.email,
+            allKeys: Object.keys(customer)
+          });
+
+          // CRITICAL: Create a completely new object with ONLY the fields that exist in MongoDB schema
+          const customerData = {};
+          
+          // Add name (required)
+          if (customer.name) {
+            customerData.name = customer.name;
+          }
+          
+          // Add email if it exists
+          if (customer.email) {
+            customerData.email = customer.email;
+          }
+          
+          // Add phone if it exists
+          if (customer.phone) {
+            customerData.phone = customer.phone;
+          }
+          
+          // Add loyaltyPoints if it exists and is a number
+          if (customer.loyaltyPoints !== undefined && !isNaN(customer.loyaltyPoints)) {
+            customerData.loyaltyPoints = Number(customer.loyaltyPoints);
+          }
+          
+          // Add totalSpent if it exists and is a number
+          if (customer.totalSpent !== undefined && !isNaN(customer.totalSpent)) {
+            customerData.totalSpent = Number(customer.totalSpent);
+          }
+          
+          // Add address if it exists
+          if (customer.address) {
+            customerData.address = customer.address;
+          }
+          
+          // Add joinDate if it exists
+          if (customer.joinDate) {
+            customerData.joinDate = customer.joinDate;
+          }
+          
+          // Add lastVisit if it exists
+          if (customer.lastVisit) {
+            customerData.lastVisit = customer.lastVisit;
+          }
+          
+          // Add notes if it exists
+          if (customer.notes) {
+            customerData.notes = customer.notes;
+          }
+
+          console.log('🧹 Cleaned customer data for cloud:', {
+            ...customerData,
+            hasId: 'id' in customerData,
+            has_id: '_id' in customerData
+          });
+
+          // Verify no id fields are present
+          if ('id' in customerData) {
+            console.error('❌ CRITICAL: id field still present in customerData!', customerData.id);
+            delete customerData.id;
+          }
+          
+          if ('_id' in customerData) {
+            console.error('❌ CRITICAL: _id field still present in customerData!', customerData._id);
+            delete customerData._id;
+          }
+
+          // ===== FIXED: Check if customer already exists in cloud =====
+          let existingCloudCustomer = null;
+          
+          // If we have a cloud ID, try to fetch by ID first
           if (customer._id) {
-            result = await api.updateCustomer(customer._id, customer);
+            try {
+              console.log('🔍 Checking for existing customer by ID:', customer._id);
+              const result = await api.getCustomer(customer._id);
+              if (result.success && result.customer) {
+                existingCloudCustomer = result.customer;
+                console.log('✅ Found existing customer by ID:', existingCloudCustomer._id);
+              }
+            } catch (error) {
+              console.log('⚠️ Customer not found by ID, will try email');
+            }
+          }
+          
+          // If not found by ID and we have email, try by email
+          if (!existingCloudCustomer && customer.email) {
+            try {
+              console.log('🔍 Checking for existing customer by email:', customer.email);
+              const result = await api.getCustomersByEmail(customer.email);
+              if (result.success && result.customers && result.customers.length > 0) {
+                existingCloudCustomer = result.customers[0];
+                console.log('✅ Found existing customer by email:', existingCloudCustomer._id);
+              }
+            } catch (error) {
+              console.log('⚠️ No customer found with this email');
+            }
+          }
+
+          let result;
+          let operation = '';
+          
+          if (existingCloudCustomer) {
+            // UPDATE existing customer - merge data
+            operation = 'update';
+            console.log('🔄 Updating existing customer with _id:', existingCloudCustomer._id);
+            
+            // Preserve and merge important cloud fields
+            // Add new loyalty points to existing total
+            if (customerData.loyaltyPoints) {
+              customerData.loyaltyPoints = (existingCloudCustomer.loyaltyPoints || 0) + customerData.loyaltyPoints;
+            } else {
+              customerData.loyaltyPoints = existingCloudCustomer.loyaltyPoints || 0;
+            }
+            
+            // Add new total spent to existing total
+            if (customerData.totalSpent) {
+              customerData.totalSpent = (existingCloudCustomer.totalSpent || 0) + customerData.totalSpent;
+            } else {
+              customerData.totalSpent = existingCloudCustomer.totalSpent || 0;
+            }
+            
+            // Keep the most recent lastVisit
+            if (customerData.lastVisit) {
+              const newDate = new Date(customerData.lastVisit);
+              const existingDate = existingCloudCustomer.lastVisit ? new Date(existingCloudCustomer.lastVisit) : null;
+              
+              if (!existingDate || newDate > existingDate) {
+                // Keep the new date if it's more recent
+              } else {
+                customerData.lastVisit = existingCloudCustomer.lastVisit;
+              }
+            } else {
+              customerData.lastVisit = existingCloudCustomer.lastVisit;
+            }
+            
+            result = await api.updateCustomer(existingCloudCustomer._id, customerData);
+          } else if (customer._id) {
+            // Try update with stored ID (might be stale)
+            operation = 'update-attempt';
+            console.log('🔄 Attempting update with stored ID:', customer._id);
+            result = await api.updateCustomer(customer._id, customerData);
           } else {
-            result = await api.createCustomer(customer);
+            // CREATE new customer
+            operation = 'create';
+            console.log('➕ Creating new customer');
+            result = await api.createCustomer(customerData);
           }
           
           if (result.success) {
-            // Mark as synced locally
-            customer.synced = true;
-            customer.cloudId = result.customer._id;
-            await db.put('customers', customer);
+            // FIXED: Preserve the local ID when updating
+            // Create a new object that keeps the local 'id' and adds cloud data
+            const cloudId = result.customer?._id || result.customer?.id || result.id || result._id;
+            
+            const updatedCustomer = {
+              ...customer, // Keep all existing fields including the local 'id'
+              _id: cloudId, // Store the MongoDB _id
+              cloudId: cloudId,
+              synced: true,
+              syncRequired: false,
+              lastSyncedAt: new Date().toISOString()
+            };
+            
+            // Ensure the local 'id' field is preserved (double-check)
+            if (!updatedCustomer.id) {
+              updatedCustomer.id = customer.id; // Make sure id is not lost
+              console.log('⚠️ Restored missing id:', updatedCustomer.id);
+            }
+            
+            console.log('📝 Saving updated customer locally:', {
+              id: updatedCustomer.id,
+              _id: updatedCustomer._id,
+              name: updatedCustomer.name,
+              email: updatedCustomer.email,
+              operation: operation
+            });
+            
+            await db.put('customers', updatedCustomer);
+            console.log('✅ Customer synced to cloud:', customer.name, 'Cloud ID:', cloudId);
             pushed++;
+          } else {
+            console.error('❌ Failed to sync customer:', result.error);
           }
         } catch (error) {
-          console.error('Failed to push customer:', error);
+          console.error('❌ Failed to push customer:', error);
+          if (error.response) {
+            console.error('Server response:', error.response.data);
+          }
         }
       }
       
@@ -183,17 +367,112 @@ class CloudSyncService {
       
       for (const transaction of unsyncedTransactions) {
         try {
-          const result = await api.syncTransaction(transaction);
+          // DEBUG: Log raw transaction
+          console.log('🔍 Raw transaction from DB:', {
+            id: transaction.id,
+            receiptNumber: transaction.receiptNumber,
+            hasCustomer: !!transaction.customer,
+            customerId: transaction.customer?.id,
+            customer_id: transaction.customer?._id
+          });
+
+          // Create a clean copy for cloud sync
+          const cleanTransaction = {};
+          
+          // Add basic fields
+          cleanTransaction.receiptNumber = transaction.receiptNumber;
+          cleanTransaction.subtotal = transaction.subtotal;
+          cleanTransaction.discount = transaction.discount || 0;
+          cleanTransaction.total = transaction.total;
+          cleanTransaction.paymentMethod = transaction.paymentMethod;
+          cleanTransaction.change = transaction.change || 0;
+          cleanTransaction.status = transaction.status || 'completed';
+          cleanTransaction.createdAt = transaction.createdAt || new Date().toISOString();
+          
+          // Add tax if it exists
+          if (transaction.tax) {
+            cleanTransaction.tax = transaction.tax;
+          }
+          
+          // Add notes if they exist
+          if (transaction.notes) {
+            cleanTransaction.notes = transaction.notes;
+          }
+          
+          // Clean customer data if present - WITHOUT ANY ID FIELDS
+          if (transaction.customer && transaction.customer.name) {
+            const cleanCustomer = {};
+            
+            if (transaction.customer.name) {
+              cleanCustomer.name = transaction.customer.name;
+            }
+            
+            if (transaction.customer.email) {
+              cleanCustomer.email = transaction.customer.email;
+            }
+            
+            if (transaction.customer.loyaltyPoints) {
+              cleanCustomer.loyaltyPoints = transaction.customer.loyaltyPoints;
+            }
+            
+            // Only add customer if it has at least a name
+            if (Object.keys(cleanCustomer).length > 0) {
+              cleanTransaction.customer = cleanCustomer;
+              
+              // DEBUG: Log cleaned customer
+              console.log('🧹 Cleaned transaction customer:', cleanCustomer);
+            }
+          }
+          
+          // Clean items - remove any id fields
+          if (transaction.items && Array.isArray(transaction.items)) {
+            cleanTransaction.items = transaction.items.map(item => {
+              const cleanItem = {
+                name: item.name,
+                sku: item.sku,
+                price: item.price,
+                quantity: item.quantity,
+                total: item.price * item.quantity
+              };
+              return cleanItem;
+            });
+            
+            console.log(`🧹 Cleaned ${cleanTransaction.items.length} items`);
+          }
+
+          console.log('☁️ Syncing transaction to cloud:', {
+            receiptNumber: cleanTransaction.receiptNumber,
+            hasCustomer: !!cleanTransaction.customer,
+            customerName: cleanTransaction.customer?.name,
+            itemsCount: cleanTransaction.items?.length
+          });
+
+          const result = await api.syncTransaction(cleanTransaction);
           
           if (result.success) {
-            // Mark as synced locally
-            transaction.synced = true;
-            transaction.cloudId = result.id;
-            await db.put('transactions', transaction);
+            // FIXED: Preserve the local ID when updating
+            const updatedTransaction = {
+              ...transaction, // Keep all existing fields including the local 'id'
+              synced: true,
+              cloudId: result.id,
+              _id: result.id,
+              lastSyncedAt: new Date().toISOString()
+            };
+            
+            // Ensure the local 'id' field is preserved
+            if (!updatedTransaction.id) {
+              updatedTransaction.id = transaction.id;
+              console.log('⚠️ Restored missing transaction id:', updatedTransaction.id);
+            }
+            
+            await db.put('transactions', updatedTransaction);
+            console.log('✅ Transaction synced to cloud:', transaction.receiptNumber, 'Cloud ID:', result.id);
             pushed++;
+          } else {
+            console.error('❌ Failed to sync transaction:', result.error);
           }
         } catch (error) {
-          console.error('Failed to push transaction:', error);
+          console.error('❌ Failed to push transaction:', error);
         }
       }
       
@@ -206,6 +485,7 @@ class CloudSyncService {
 
   async pushToCloud() {
     this.notifyListeners({ type: 'sync-start', message: 'Pushing to cloud...' });
+    console.log('🚀 Starting push to cloud...');
     
     try {
       const [products, customers, transactions] = await Promise.all([
@@ -215,6 +495,8 @@ class CloudSyncService {
       ]);
       
       const total = (products.count || 0) + (customers.count || 0) + (transactions.count || 0);
+      
+      console.log('📊 Push results:', { products, customers, transactions });
       
       this.notifyListeners({ 
         type: 'sync-complete', 
@@ -227,6 +509,7 @@ class CloudSyncService {
         details: { products, customers, transactions }
       };
     } catch (error) {
+      console.error('❌ Push to cloud failed:', error);
       this.notifyListeners({ type: 'sync-error', message: error.message });
       return { success: false, error: error.message };
     }
@@ -242,36 +525,49 @@ class CloudSyncService {
       let pulled = 0;
       
       if (result.success && result.products) {
+        console.log(`📥 Pulling ${result.products.length} products from cloud`);
+        
         for (const cloudProduct of result.products) {
           try {
-            // Check if product exists locally by SKU
+            // Check if product exists locally by SKU or MongoDB _id
             const allProducts = await db.getAll('products');
-            const existingProduct = allProducts.find(p => p.sku === cloudProduct.sku);
+            const existingProduct = allProducts.find(p => 
+              p.sku === cloudProduct.sku || p._id === cloudProduct._id
+            );
+            
+            // Prepare local product data
+            const localProduct = {
+              ...cloudProduct,
+              id: existingProduct?.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+              _id: cloudProduct._id, // Store MongoDB _id
+              synced: true,
+              syncRequired: false,
+              lastSyncedAt: new Date().toISOString(),
+              cloudImages: cloudProduct.images || cloudProduct.cloudinaryImages || [],
+              cloudMainImage: cloudProduct.mainImage || cloudProduct.cloudMainImage
+            };
+            
+            // Remove any fields that might cause conflicts
+            delete localProduct.__v; // Remove Mongoose version field
             
             if (existingProduct) {
-              // Update existing
+              // Update existing - preserve local images if they exist
               await db.put('products', {
                 ...existingProduct,
-                ...cloudProduct,
-                _id: cloudProduct._id,
-                synced: true,
-                syncRequired: false
+                ...localProduct,
+                localImages: existingProduct.localImages || [] // Keep local images
               });
             } else {
               // Create new
-              await db.put('products', {
-                ...cloudProduct,
-                id: `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                _id: cloudProduct._id,
-                synced: true,
-                syncRequired: false
-              });
+              await db.put('products', localProduct);
             }
             pulled++;
           } catch (error) {
             console.error('Failed to save pulled product:', error);
           }
         }
+        
+        console.log(`✅ Pulled ${pulled} products`);
       }
       
       return { success: true, count: pulled };
@@ -289,32 +585,47 @@ class CloudSyncService {
       let pulled = 0;
       
       if (result.success && result.customers) {
+        console.log(`📥 Pulling ${result.customers.length} customers from cloud`);
+        
         for (const cloudCustomer of result.customers) {
           try {
-            // Check if customer exists locally by email
+            // Check if customer exists locally by email or MongoDB _id
             const allCustomers = await db.getAll('customers');
-            const existingCustomer = allCustomers.find(c => c.email === cloudCustomer.email);
+            const existingCustomer = allCustomers.find(c => 
+              c.email === cloudCustomer.email || c._id === cloudCustomer._id
+            );
+            
+            // Prepare local customer data - preserve local ID if exists
+            const localCustomer = {
+              ...cloudCustomer,
+              _id: cloudCustomer._id, // Store MongoDB _id
+              id: existingCustomer?.id || `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Local ID for IndexedDB
+              synced: true,
+              syncRequired: false,
+              lastSyncedAt: new Date().toISOString()
+            };
+            
+            // Remove any field that might cause conflicts
+            delete localCustomer.__v; // Remove Mongoose version field
             
             if (existingCustomer) {
+              // Update existing - preserve local ID but update cloud data
               await db.put('customers', {
                 ...existingCustomer,
-                ...cloudCustomer,
-                _id: cloudCustomer._id,
-                synced: true
+                ...localCustomer,
+                id: existingCustomer.id // Keep the original local ID
               });
             } else {
-              await db.put('customers', {
-                ...cloudCustomer,
-                id: cloudCustomer.id || `cust_${Date.now()}`,
-                _id: cloudCustomer._id,
-                synced: true
-              });
+              // Create new
+              await db.put('customers', localCustomer);
             }
             pulled++;
           } catch (error) {
             console.error('Failed to save pulled customer:', error);
           }
         }
+        
+        console.log(`✅ Pulled ${pulled} customers`);
       }
       
       return { success: true, count: pulled };
@@ -332,25 +643,40 @@ class CloudSyncService {
       let pulled = 0;
       
       if (result.success && result.transactions) {
+        console.log(`📥 Pulling ${result.transactions.length} transactions from cloud`);
+        
         for (const cloudTransaction of result.transactions) {
           try {
             // Check if transaction exists locally by receipt number
             const allTransactions = await db.getAll('transactions');
-            const existingTransaction = allTransactions.find(t => t.receiptNumber === cloudTransaction.receiptNumber);
+            const existingTransaction = allTransactions.find(t => 
+              t.receiptNumber === cloudTransaction.receiptNumber
+            );
             
             if (!existingTransaction) {
-              await db.put('transactions', {
+              // Prepare local transaction data
+              const localTransaction = {
                 ...cloudTransaction,
                 id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
                 _id: cloudTransaction._id,
-                synced: true
-              });
+                synced: true,
+                syncRequired: false,
+                lastSyncedAt: new Date().toISOString(),
+                createdAt: cloudTransaction.createdAt || new Date().toISOString()
+              };
+              
+              // Remove Mongoose version field
+              delete localTransaction.__v;
+              
+              await db.put('transactions', localTransaction);
               pulled++;
             }
           } catch (error) {
             console.error('Failed to save pulled transaction:', error);
           }
         }
+        
+        console.log(`✅ Pulled ${pulled} transactions`);
       }
       
       return { success: true, count: pulled };
@@ -362,6 +688,7 @@ class CloudSyncService {
 
   async pullFromCloud() {
     this.notifyListeners({ type: 'sync-start', message: 'Pulling from cloud...' });
+    console.log('🚀 Starting pull from cloud...');
     
     try {
       const [products, customers, transactions] = await Promise.all([
@@ -371,6 +698,8 @@ class CloudSyncService {
       ]);
       
       const total = (products.count || 0) + (customers.count || 0) + (transactions.count || 0);
+      
+      console.log('📊 Pull results:', { products, customers, transactions });
       
       this.notifyListeners({ 
         type: 'sync-complete', 
@@ -383,6 +712,7 @@ class CloudSyncService {
         details: { products, customers, transactions }
       };
     } catch (error) {
+      console.error('❌ Pull from cloud failed:', error);
       this.notifyListeners({ type: 'sync-error', message: error.message });
       return { success: false, error: error.message };
     }
@@ -392,17 +722,21 @@ class CloudSyncService {
 
   async fullSync() {
     if (this.syncInProgress) {
+      console.log('⏳ Sync already in progress, skipping...');
       return { success: false, error: 'Sync already in progress' };
     }
 
     this.syncInProgress = true;
     this.notifyListeners({ type: 'sync-start', message: 'Full sync in progress...' });
+    console.log('🔄 Starting full sync...');
 
     try {
       // First push local changes
+      console.log('📤 Pushing local changes to cloud...');
       const pushResult = await this.pushToCloud();
       
       // Then pull cloud changes
+      console.log('📥 Pulling cloud changes...');
       const pullResult = await this.pullFromCloud();
       
       const totalPushed = pushResult.count || 0;
@@ -410,6 +744,8 @@ class CloudSyncService {
       
       this.lastSyncTime = new Date().toISOString();
       localStorage.setItem('lastCloudSync', this.lastSyncTime);
+      
+      console.log(`✅ Full sync complete: ${totalPushed} pushed, ${totalPulled} pulled`);
       
       this.notifyListeners({ 
         type: 'sync-complete', 
@@ -426,6 +762,7 @@ class CloudSyncService {
         }
       };
     } catch (error) {
+      console.error('❌ Full sync failed:', error);
       this.syncInProgress = false;
       this.notifyListeners({ type: 'sync-error', message: error.message });
       return { success: false, error: error.message };
@@ -436,11 +773,13 @@ class CloudSyncService {
 
   async restoreFromCloud(options = { clearLocal: true }) {
     this.notifyListeners({ type: 'sync-start', message: 'Restoring from cloud...' });
+    console.log('🔄 Starting restore from cloud...');
 
     try {
       await this.ensureInitialized();
       
       if (options.clearLocal) {
+        console.log('🗑️ Clearing all local data...');
         // Clear all local data
         await db.clearAllStores();
         
@@ -449,9 +788,11 @@ class CloudSyncService {
         for (const image of productImages) {
           await opfs.deleteFile(image.name, 'products');
         }
+        console.log(`✅ Cleared ${productImages.length} local images`);
       }
 
       // Pull all data from cloud
+      console.log('📥 Pulling all data from cloud...');
       const [products, customers, transactions] = await Promise.all([
         api.getAllProducts(),
         api.getAllCustomers(),
@@ -462,6 +803,7 @@ class CloudSyncService {
 
       // Restore products
       if (products.success && products.products) {
+        console.log(`📦 Restoring ${products.products.length} products...`);
         for (const product of products.products) {
           await db.put('products', {
             ...product,
@@ -469,7 +811,8 @@ class CloudSyncService {
             _id: product._id,
             synced: true,
             syncRequired: false,
-            cloudImages: product.images || []
+            cloudImages: product.images || product.cloudinaryImages || [],
+            cloudMainImage: product.mainImage || product.cloudMainImage
           });
           restored++;
         }
@@ -477,12 +820,15 @@ class CloudSyncService {
 
       // Restore customers
       if (customers.success && customers.customers) {
+        console.log(`👥 Restoring ${customers.customers.length} customers...`);
         for (const customer of customers.customers) {
           await db.put('customers', {
             ...customer,
-            id: customer.id || `cust_${Date.now()}`,
+            id: `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             _id: customer._id,
-            synced: true
+            synced: true,
+            syncRequired: false,
+            lastSyncedAt: new Date().toISOString()
           });
           restored++;
         }
@@ -490,12 +836,15 @@ class CloudSyncService {
 
       // Restore transactions
       if (transactions.success && transactions.transactions) {
+        console.log(`🧾 Restoring ${transactions.transactions.length} transactions...`);
         for (const transaction of transactions.transactions) {
           await db.put('transactions', {
             ...transaction,
             id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             _id: transaction._id,
-            synced: true
+            synced: true,
+            syncRequired: false,
+            lastSyncedAt: new Date().toISOString()
           });
           restored++;
         }
@@ -504,6 +853,7 @@ class CloudSyncService {
       this.lastSyncTime = new Date().toISOString();
       localStorage.setItem('lastCloudSync', this.lastSyncTime);
 
+      console.log(`✅ Restored ${restored} items from cloud`);
       this.notifyListeners({ 
         type: 'sync-complete', 
         message: `Restored ${restored} items from cloud` 
@@ -511,6 +861,7 @@ class CloudSyncService {
 
       return { success: true, count: restored };
     } catch (error) {
+      console.error('❌ Restore from cloud failed:', error);
       this.notifyListeners({ type: 'sync-error', message: error.message });
       return { success: false, error: error.message };
     }
@@ -534,7 +885,7 @@ class CloudSyncService {
       
       const queue = await db.getAll('syncQueue');
       
-      return {
+      const status = {
         isOnline: navigator.onLine,
         lastSync: this.getLastSyncTime(),
         unsynced: {
@@ -545,6 +896,10 @@ class CloudSyncService {
         },
         queueLength: queue.length
       };
+      
+      console.log('📊 Sync status:', status);
+      
+      return status;
     } catch (error) {
       console.error('Failed to get sync status:', error);
       return {
@@ -572,7 +927,7 @@ class CloudSyncService {
       
       const queue = await db.getAll('syncQueue');
 
-      return {
+      const stats = {
         products: {
           total: allProducts.length,
           unsynced: unsyncedProducts.length
@@ -587,6 +942,8 @@ class CloudSyncService {
         },
         queue: queue.length
       };
+      
+      return stats;
     } catch (error) {
       console.error('Failed to get sync stats:', error);
       return {

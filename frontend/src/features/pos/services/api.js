@@ -174,11 +174,55 @@ class API {
   async syncTransaction(transactionData) {
     try {
       console.log('🔄 Syncing transaction:', transactionData.receiptNumber);
-      const response = await this.client.post('/transactions/sync', transactionData);
+      
+      // Create a deep clean copy to avoid any unintended mutations
+      const cleanData = JSON.parse(JSON.stringify(transactionData));
+      
+      // Remove any local-only fields
+      delete cleanData.id;
+      delete cleanData.syncRequired;
+      delete cleanData.syncError;
+      delete cleanData.lastSyncAttempt;
+      
+      // Ensure customer object doesn't have any id fields
+      if (cleanData.customer) {
+        // Remove any id field that might cause ObjectId casting errors
+        delete cleanData.customer.id;
+        delete cleanData.customer._id;
+        
+        // Create a clean customer object with only valid fields
+        const validCustomer = {};
+        
+        if (cleanData.customer.name) validCustomer.name = cleanData.customer.name;
+        if (cleanData.customer.email) validCustomer.email = cleanData.customer.email;
+        if (cleanData.customer.loyaltyPoints) validCustomer.loyaltyPoints = cleanData.customer.loyaltyPoints;
+        
+        cleanData.customer = validCustomer;
+      }
+      
+      // Ensure items don't have productId or id
+      if (cleanData.items && Array.isArray(cleanData.items)) {
+        cleanData.items = cleanData.items.map(item => {
+          const { productId, id, ...rest } = item;
+          return rest; // Return item without productId or id
+        });
+      }
+
+      console.log('📤 Sending clean transaction data to cloud:', {
+        receiptNumber: cleanData.receiptNumber,
+        hasCustomer: !!cleanData.customer,
+        customerName: cleanData.customer?.name,
+        itemsCount: cleanData.items?.length
+      });
+
+      const response = await this.client.post('/transactions/sync', cleanData);
       console.log('✅ Transaction synced:', response.data._id);
       return { success: true, id: response.data._id, transaction: response.data };
     } catch (error) {
       console.error('❌ Sync transaction error:', error.message);
+      if (error.response) {
+        console.error('Server response:', error.response.data);
+      }
       return { success: false, error: error.message };
     }
   }
@@ -254,17 +298,81 @@ class API {
   async createCustomer(customerData) {
     try {
       console.log('📤 Creating customer:', customerData.name);
-      const response = await this.client.post('/customers', customerData);
+      
+      // Create a clean copy without any local id fields
+      const cleanData = {
+        name: customerData.name,
+        email: customerData.email || '',
+        phone: customerData.phone || '',
+        loyaltyPoints: customerData.loyaltyPoints || 0,
+        totalSpent: customerData.totalSpent || 0,
+        notes: customerData.notes || ''
+      };
+      
+      // Add optional fields if they exist
+      if (customerData.address) {
+        cleanData.address = customerData.address;
+      }
+      
+      if (customerData.joinDate) {
+        cleanData.joinDate = customerData.joinDate;
+      }
+      
+      if (customerData.lastVisit) {
+        cleanData.lastVisit = customerData.lastVisit;
+      }
+      
+      // IMPORTANT: Do NOT include any id field
+      delete cleanData.id;
+      delete cleanData._id;
+      
+      console.log('📤 Sending clean customer data:', cleanData);
+      
+      const response = await this.client.post('/customers', cleanData);
+      console.log('✅ Customer created:', response.data._id);
       return { success: true, customer: response.data };
     } catch (error) {
       console.error('❌ Create customer error:', error.message);
+      if (error.response) {
+        console.error('Server response:', error.response.data);
+      }
       return { success: false, error: error.message };
     }
   }
 
   async updateCustomer(id, customerData) {
     try {
-      const response = await this.client.put(`/customers/${id}`, customerData);
+      console.log('📤 Updating customer:', id);
+      
+      // Create a clean copy without any local id fields
+      const cleanData = {
+        name: customerData.name,
+        email: customerData.email || '',
+        phone: customerData.phone || '',
+        loyaltyPoints: customerData.loyaltyPoints || 0,
+        totalSpent: customerData.totalSpent || 0,
+        notes: customerData.notes || ''
+      };
+      
+      // Add optional fields if they exist
+      if (customerData.address) {
+        cleanData.address = customerData.address;
+      }
+      
+      if (customerData.joinDate) {
+        cleanData.joinDate = customerData.joinDate;
+      }
+      
+      if (customerData.lastVisit) {
+        cleanData.lastVisit = customerData.lastVisit;
+      }
+      
+      // IMPORTANT: Do NOT include any id field
+      delete cleanData.id;
+      delete cleanData._id;
+      
+      const response = await this.client.put(`/customers/${id}`, cleanData);
+      console.log('✅ Customer updated:', id);
       return { success: true, customer: response.data };
     } catch (error) {
       console.error('❌ Update customer error:', error.message);
@@ -294,9 +402,17 @@ class API {
 
   async getCustomer(id) {
     try {
+      console.log(`🔍 Fetching customer by ID: ${id}`);
       const response = await this.client.get(`/customers/${id}`);
-      return { success: true, customer: response.data };
+      return { 
+        success: true, 
+        customer: response.data 
+      };
     } catch (error) {
+      if (error.response?.status === 404) {
+        console.log('⚠️ Customer not found by ID');
+        return { success: false, error: 'Customer not found', customer: null };
+      }
       console.error('❌ Get customer error:', error.message);
       return { success: false, error: error.message, customer: null };
     }
@@ -304,11 +420,55 @@ class API {
 
   async getCustomerByEmail(email) {
     try {
-      const response = await this.client.get(`/customers/email/${email}`);
-      return { success: true, customer: response.data };
+      console.log(`🔍 Searching for customer by email: ${email}`);
+      const response = await this.client.get(`/customers/email/${encodeURIComponent(email)}`);
+      return { 
+        success: true, 
+        customer: response.data 
+      };
     } catch (error) {
+      if (error.response?.status === 404) {
+        console.log('⚠️ No customer found with this email');
+        return { success: true, customer: null }; // No customer found, but not an error
+      }
       console.error('❌ Get customer by email error:', error.message);
       return { success: false, error: error.message, customer: null };
+    }
+  }
+
+  // ==================== NEW: CUSTOMER SEARCH METHODS ====================
+
+  async getCustomersByEmail(email) {
+    try {
+      console.log(`🔍 Searching for customers by email: ${email}`);
+      const response = await this.client.get(`/customers/email/${encodeURIComponent(email)}`);
+      return { 
+        success: true, 
+        customers: [response.data] // API returns single customer or 404
+      };
+    } catch (error) {
+      if (error.response?.status === 404) {
+        console.log('⚠️ No customers found with this email');
+        return { success: true, customers: [] }; // No customer found, but not an error
+      }
+      console.error('❌ Get customers by email error:', error.message);
+      return { success: false, error: error.message, customers: [] };
+    }
+  }
+
+  async searchCustomers(query) {
+    try {
+      console.log(`🔍 Searching customers with query: ${query}`);
+      const response = await this.client.get('/customers/search', {
+        params: { q: query }
+      });
+      return { 
+        success: true, 
+        customers: response.data 
+      };
+    } catch (error) {
+      console.error('❌ Search customers error:', error.message);
+      return { success: false, error: error.message, customers: [] };
     }
   }
 

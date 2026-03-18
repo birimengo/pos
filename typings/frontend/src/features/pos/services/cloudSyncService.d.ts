@@ -2,7 +2,7 @@
 declare interface productDataType {
 	pushCustomers(): Promise<{	}>;
 
-	pushTransactions(): Promise<{	}>;
+	pushTransactions(): Promise<any>;
 
 	pushToCloud(): Promise<null | {	}>;
 
@@ -18,9 +18,9 @@ declare interface productDataType {
 
 	restoreFromCloud(options: {	}): Promise<{	}>;
 
-	getSyncStatus(): Promise<null>;
+	getSyncStatus(): Promise<any>;
 
-	getSyncStats(): Promise<null>;
+	getSyncStats(): Promise<any>;
 
 	getLastSyncTime(): any;
 }

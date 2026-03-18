@@ -2,7 +2,7 @@
 declare interface itemType {
 	put(storeName: any, data: any): Promise<any>;
 
-	delete(storeName: any, id: any): Promise<any>;
+	delete(storeName: any, id: any): Promise<void>;
 
 	query(storeName: any, indexName: any, value: any): Promise<any>;
 
@@ -14,9 +14,9 @@ declare interface itemType {
 
 	getProductsByCategory(category: any): Promise<any>;
 
-	getUnsyncedProducts(): Promise<any>;
+	getUnsyncedProducts(): Promise<Function>;
 
-	markProductSynced(id: any, cloudId: any): Promise<any>;
+	markProductSynced(id: any, cloudId: any): Promise<void>;
 
 	deleteProduct(id: any): Promise<any>;
 
@@ -36,31 +36,33 @@ declare interface itemType {
 
 	getTransactions(): Promise<any>;
 
-	getTransactionsByDateRange(startDate: any, endDate: any): Promise<any>;
+	getTransactionsByDateRange(startDate: any, endDate: any): Promise<null | Date>;
 
 	getTransactionsByCustomer(customerId: any): Promise<any>;
 
 	getTransactionsByPaymentMethod(paymentMethod: any): Promise<any>;
 
-	getUnsyncedTransactions(): Promise<any>;
+	getUnsyncedTransactions(): Promise<Function>;
 
-	markTransactionSynced(id: any, cloudId: any): Promise<any>;
+	markTransactionSynced(id: any, cloudId: any): Promise<void>;
 
-	getDailySales(date: any): Promise<any>;
+	getDailySales(date: any): Promise<null>;
 
-	addToSyncQueue(item: any): Promise<any>;
+	addToSyncQueue(item: any): Promise<null>;
 
 	getSyncQueue(): Promise<any>;
 
 	deleteSyncQueueItem(id: any): Promise<any>;
 
-	clearSyncQueue(): Promise<any>;
+	clearSyncQueue(): Promise<void>;
 
 	getSetting(key: any): Promise<any>;
 
-	setSetting(key: any, value: any): Promise<any>;
+	setSetting(key: any, value: any): Promise<void>;
 
-	clearAllStores(): Promise<any>;
+	clearAllStores(): Promise<void>;
 
 	getDatabaseStats(): Promise<any>;
+
+	fixEmailIndex(): Promise<{	}>;
 }

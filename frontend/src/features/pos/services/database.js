@@ -6,7 +6,7 @@ class DatabaseService {
   constructor() {
     this.db = null;
     this.dbName = 'BizCorePOS';
-    this.dbVersion = 4; // Increment to add transactions store
+    this.dbVersion = 5; // Increment version to ensure schema update
     this.initPromise = null;
     this.initialized = false;
   }
@@ -17,50 +17,62 @@ class DatabaseService {
     if (!this.initPromise) {
       this.initPromise = (async () => {
         try {
-          console.log('🔄 Initializing database v4...');
+          console.log('🔄 Initializing database v5...');
           
           this.db = await openDB(this.dbName, this.dbVersion, {
-            upgrade(db, oldVersion, newVersion, transaction) {
+            upgrade: async (db, oldVersion, newVersion, transaction) => {
               console.log(`Upgrading database from v${oldVersion} to v${newVersion}`);
               
-              // Delete existing stores to ensure clean schema
+              // Handle existing stores
               const storeNames = Array.from(db.objectStoreNames);
-              storeNames.forEach(name => {
-                db.deleteObjectStore(name);
-                console.log(`Deleted store: ${name}`);
-              });
+              
+              // Products store (if not exists)
+              if (!db.objectStoreNames.contains('products')) {
+                const productStore = db.createObjectStore('products', { keyPath: 'id' });
+                productStore.createIndex('sku', 'sku', { unique: true });
+                productStore.createIndex('barcode', 'barcode', { unique: false });
+                productStore.createIndex('category', 'category', { unique: false });
+                productStore.createIndex('synced', 'synced', { unique: false });
+                console.log('✅ Created products store');
+              }
 
-              // Products store
-              const productStore = db.createObjectStore('products', { keyPath: 'id' });
-              productStore.createIndex('sku', 'sku', { unique: true });
-              productStore.createIndex('barcode', 'barcode');
-              productStore.createIndex('category', 'category');
-              productStore.createIndex('synced', 'synced');
-              console.log('✅ Created products store');
-
-              // Customers store
-              const customerStore = db.createObjectStore('customers', { keyPath: 'id' });
-              customerStore.createIndex('email', 'email', { unique: true });
-              customerStore.createIndex('phone', 'phone');
-              customerStore.createIndex('synced', 'synced');
-              console.log('✅ Created customers store');
+              // Customers store - FIXED: Make email index non-unique
+              if (!db.objectStoreNames.contains('customers')) {
+                const customerStore = db.createObjectStore('customers', { keyPath: 'id' });
+                // IMPORTANT: Set unique: false to allow multiple customers without emails
+                customerStore.createIndex('email', 'email', { unique: false });
+                customerStore.createIndex('phone', 'phone', { unique: false });
+                customerStore.createIndex('synced', 'synced', { unique: false });
+                console.log('✅ Created customers store with non-unique email index');
+              } else {
+                // If store exists but we need to check if we need to recreate for index fix
+                // We can't easily modify indexes, so we'll keep the existing store
+                // The email index will remain as is, but we'll handle empty emails in the save method
+                console.log('📝 Using existing customers store - email index may be unique');
+              }
 
               // Transactions store
-              const transactionStore = db.createObjectStore('transactions', { keyPath: 'id' });
-              transactionStore.createIndex('receiptNumber', 'receiptNumber', { unique: true });
-              transactionStore.createIndex('timestamp', 'timestamp');
-              transactionStore.createIndex('customerId', 'customer.id');
-              transactionStore.createIndex('paymentMethod', 'paymentMethod');
-              transactionStore.createIndex('synced', 'synced');
-              console.log('✅ Created transactions store');
+              if (!db.objectStoreNames.contains('transactions')) {
+                const transactionStore = db.createObjectStore('transactions', { keyPath: 'id' });
+                transactionStore.createIndex('receiptNumber', 'receiptNumber', { unique: true });
+                transactionStore.createIndex('timestamp', 'timestamp', { unique: false });
+                transactionStore.createIndex('customerId', 'customer.id', { unique: false });
+                transactionStore.createIndex('paymentMethod', 'paymentMethod', { unique: false });
+                transactionStore.createIndex('synced', 'synced', { unique: false });
+                console.log('✅ Created transactions store');
+              }
 
               // Sync Queue store
-              db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
-              console.log('✅ Created syncQueue store');
+              if (!db.objectStoreNames.contains('syncQueue')) {
+                db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+                console.log('✅ Created syncQueue store');
+              }
 
               // Settings store
-              db.createObjectStore('settings', { keyPath: 'key' });
-              console.log('✅ Created settings store');
+              if (!db.objectStoreNames.contains('settings')) {
+                db.createObjectStore('settings', { keyPath: 'key' });
+                console.log('✅ Created settings store');
+              }
             }
           });
 
@@ -117,6 +129,30 @@ class DatabaseService {
 
   async put(storeName, data) {
     const db = await this.ensureInitialized();
+    
+    // Handle special cases for customers store
+    if (storeName === 'customers') {
+      // Create a clean copy to avoid modifying the original
+      const customerData = { ...data };
+      
+      // Handle email field for unique index - if email is empty, set to undefined
+      // This way it won't be indexed and won't cause unique constraint violations
+      if (customerData.email === '') {
+        delete customerData.email;
+      }
+      
+      // Log for debugging
+      console.log(`📝 Saving customer to ${storeName}:`, {
+        id: customerData.id,
+        name: customerData.name,
+        email: customerData.email || 'no-email'
+      });
+      
+      const item = { ...customerData, updatedAt: new Date().toISOString() };
+      await db.put(storeName, item);
+      return item.id;
+    }
+    
     const item = { ...data, updatedAt: new Date().toISOString() };
     await db.put(storeName, item);
     return item.id;
@@ -202,7 +238,32 @@ class DatabaseService {
   // ==================== CUSTOMER METHODS ====================
 
   async saveCustomer(customer) {
-    return this.put('customers', customer);
+    // Create a clean copy to avoid modifying the original
+    const customerToSave = { ...customer };
+    
+    // Handle email field for unique index - if empty, remove it completely
+    // This way it won't be indexed and won't cause unique constraint violations
+    if (!customerToSave.email || customerToSave.email === '') {
+      delete customerToSave.email;
+    }
+    
+    // Ensure required fields
+    if (!customerToSave.name) {
+      throw new Error('Customer name is required');
+    }
+    
+    // Generate ID if not present
+    if (!customerToSave.id) {
+      customerToSave.id = `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    console.log('💾 Saving customer to database:', {
+      id: customerToSave.id,
+      name: customerToSave.name,
+      email: customerToSave.email || 'no-email'
+    });
+    
+    return this.put('customers', customerToSave);
   }
 
   async getCustomers() {
@@ -214,20 +275,44 @@ class DatabaseService {
   }
 
   async getCustomerByEmail(email) {
-    const customers = await this.query('customers', 'email', email);
-    return customers[0];
+    if (!email) return null;
+    try {
+      const customers = await this.query('customers', 'email', email);
+      return customers[0];
+    } catch (error) {
+      console.warn('Error querying by email:', error);
+      return null;
+    }
   }
 
   async getCustomerByPhone(phone) {
-    const customers = await this.query('customers', 'phone', phone);
-    return customers[0];
+    if (!phone) return null;
+    try {
+      const customers = await this.query('customers', 'phone', phone);
+      return customers[0];
+    } catch (error) {
+      console.warn('Error querying by phone:', error);
+      return null;
+    }
   }
 
   // ==================== TRANSACTION METHODS ====================
 
   async saveTransaction(transaction) {
     console.log('💾 Saving transaction to database:', transaction.receiptNumber);
-    return this.put('transactions', transaction);
+    
+    // Ensure transaction has required fields
+    const transactionToSave = { ...transaction };
+    
+    if (!transactionToSave.id) {
+      transactionToSave.id = `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    if (!transactionToSave.createdAt) {
+      transactionToSave.createdAt = new Date().toISOString();
+    }
+    
+    return this.put('transactions', transactionToSave);
   }
 
   async getTransaction(id) {
@@ -245,7 +330,7 @@ class DatabaseService {
     const all = await store.getAll();
     
     return all.filter(t => {
-      const date = new Date(t.timestamp);
+      const date = new Date(t.createdAt || t.timestamp);
       return date >= new Date(startDate) && date <= new Date(endDate);
     });
   }
@@ -407,6 +492,41 @@ class DatabaseService {
     }
     
     return stats;
+  }
+
+  // ==================== MAINTENANCE METHODS ====================
+
+  async fixEmailIndex() {
+    console.log('🔄 Running email index fix...');
+    
+    try {
+      await this.ensureInitialized();
+      
+      // Get all customers
+      const customers = await this.getAll('customers');
+      console.log(`📊 Found ${customers.length} customers to process`);
+      
+      // Process each customer to ensure email is properly formatted
+      for (const customer of customers) {
+        let needsUpdate = false;
+        
+        if (customer.email === '') {
+          delete customer.email;
+          needsUpdate = true;
+          console.log(`📝 Removed empty email for customer: ${customer.name}`);
+        }
+        
+        if (needsUpdate) {
+          await this.put('customers', customer);
+        }
+      }
+      
+      console.log('✅ Email index fix completed');
+      return { success: true, processed: customers.length };
+    } catch (error) {
+      console.error('❌ Email index fix failed:', error);
+      return { success: false, error: error.message };
+    }
   }
 }
 

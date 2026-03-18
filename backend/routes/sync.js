@@ -1,11 +1,12 @@
-// routes/sync.js
-const express = require('express');
-const router = express.Router();
-const syncController = require('../controllers/syncController');
-const auth = require('../middleware/auth');
+import express from 'express';
+import * as syncController from '../controllers/syncController.js';
+import auth from '../middleware/auth.js';
 
+const router = express.Router();
+
+// Sync routes
 router.post('/products', auth, syncController.syncProducts);
 router.post('/transactions', auth, syncController.syncTransactions);
 router.get('/data', auth, syncController.getSyncData);
 
-module.exports = router;
+export default router;

@@ -27,7 +27,10 @@ function customerReducer(state, action) {
           joinDate: new Date().toISOString().split('T')[0],
           lastVisit: new Date().toISOString().split('T')[0],
           loyaltyPoints: 0,
-          totalSpent: 0
+          totalSpent: 0,
+          transactionCount: 0,
+          creditCount: 0,
+          installmentCount: 0
         }] 
       };
     case 'UPDATE_CUSTOMER':
@@ -51,7 +54,11 @@ function customerReducer(state, action) {
                 ...c, 
                 loyaltyPoints: (c.loyaltyPoints || 0) + action.payload.points,
                 totalSpent: (c.totalSpent || 0) + action.payload.amount,
-                lastVisit: new Date().toISOString().split('T')[0]
+                lastVisit: new Date().toISOString().split('T')[0],
+                transactionCount: (c.transactionCount || 0) + 1,
+                // Track credit/installment counts based on transaction type
+                creditCount: (c.creditCount || 0) + (action.payload.isCredit ? 1 : 0),
+                installmentCount: (c.installmentCount || 0) + (action.payload.isInstallment ? 1 : 0)
               }
             : c
         )

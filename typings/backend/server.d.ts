@@ -1,4 +1,4 @@
 
-declare interface queryType {}
+declare interface customerDataType {}
 
-declare interface resultsType {}
+declare interface customerDataType {}

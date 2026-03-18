@@ -292,7 +292,26 @@ export default function Checkout() {
     }
   };
 
+  // IMPROVED: Check for duplicate emails only when adding NEW customers
+  // Existing customers can make multiple purchases without restriction
   const handleSelectCustomer = (customer) => {
+    // Check if this is an existing customer (they already have an ID in our system)
+    const isExistingCustomer = customerState.customers.some(c => c.id === customer.id);
+    
+    // Only validate email for NEW customers
+    if (!isExistingCustomer && customer.email) {
+      // This is a NEW customer with an email - check if email is already used by another customer
+      const existingCustomerWithEmail = customerState.customers.find(c => 
+        c.email && c.email.toLowerCase() === customer.email.toLowerCase()
+      );
+      
+      if (existingCustomerWithEmail) {
+        alert(`Cannot create new customer: Email ${customer.email} is already registered to ${existingCustomerWithEmail.name}. Please select the existing customer from the list or use a different email.`);
+        return;
+      }
+    }
+    
+    // For existing customers OR new customers with unique email, allow selection
     cartDispatch({ type: 'SET_CUSTOMER', payload: customer });
     setShowCustomerModal(false);
   };
@@ -340,10 +359,23 @@ export default function Checkout() {
 
   const saveTransaction = async (saleData) => {
     try {
+      // IMPORTANT: Create a clean customer object for the transaction
+      // For local storage, we want to keep the customer ID reference
+      // But for cloud sync, we need to handle it carefully in the service layer
+      const customerForTransaction = saleData.customer ? {
+        // Keep the local ID for local reference - this is fine for IndexedDB
+        id: saleData.customer.id || saleData.customer._id,
+        name: saleData.customer.name,
+        email: saleData.customer.email || '',
+        phone: saleData.customer.phone || '',
+        loyaltyPoints: saleData.customer.loyaltyPoints || 0
+      } : null;
+
       const transactionData = {
         receiptNumber: saleData.receiptNumber,
         items: saleData.items.map(item => ({
-          id: item.id,
+          // For local storage, we want to keep product reference
+          productId: item.id, // Keep for local reference
           name: item.name,
           sku: item.sku,
           price: item.price,
@@ -356,9 +388,18 @@ export default function Checkout() {
         total: saleData.total,
         paymentMethod: saleData.method,
         change: saleData.change || 0,
-        customer: saleData.customer,
+        customer: customerForTransaction,
         notes: saleData.notes || '',
         timestamp: saleData.timestamp,
+        // Payment status fields
+        status: saleData.status || 'completed',
+        remaining: saleData.remaining || 0,
+        dueDate: saleData.dueDate || null,
+        creditSchedule: saleData.creditSchedule || null,
+        // NEW: Track payment type for customer statistics
+        isCredit: saleData.isCredit || false,
+        isInstallment: saleData.isInstallment || false,
+        // Sync flags
         synced: false,
         syncRequired: true
       };
@@ -377,7 +418,8 @@ export default function Checkout() {
     }
   };
 
-  const updateCustomerLoyalty = async (customerId, amount) => {
+  // UPDATED: Track credit/installment status for customer statistics
+  const updateCustomerLoyalty = async (customerId, amount, isCredit = false, isInstallment = false) => {
     const pointsEarned = Math.floor(amount);
     
     customerDispatch({
@@ -385,7 +427,9 @@ export default function Checkout() {
       payload: {
         customerId,
         points: pointsEarned,
-        amount
+        amount,
+        isCredit,
+        isInstallment
       }
     });
 
@@ -398,7 +442,11 @@ export default function Checkout() {
           totalSpent: (customer.totalSpent || 0) + amount,
           lastVisit: new Date().toISOString().split('T')[0],
           updatedAt: new Date().toISOString(),
-          synced: false
+          synced: false,
+          // Track credit/installment counts
+          creditCount: (customer.creditCount || 0) + (isCredit ? 1 : 0),
+          installmentCount: (customer.installmentCount || 0) + (isInstallment ? 1 : 0),
+          transactionCount: (customer.transactionCount || 0) + 1
         };
         
         await db.put('customers', updatedCustomer);
@@ -418,6 +466,7 @@ export default function Checkout() {
     setProcessingSale(true);
     
     try {
+      // Update stock for each item
       for (const item of cartState.items) {
         await updateProductStock(item.id, item.quantity);
       }
@@ -436,15 +485,25 @@ export default function Checkout() {
         tax,
         taxRate,
         subtotal: cartState.subtotal,
-        total
+        total,
+        // Pass through payment type flags
+        isCredit: paymentDetails.isCredit || false,
+        isInstallment: paymentDetails.isInstallment || false
       };
 
       const savedTransaction = await saveTransaction(sale);
 
+      // Update customer loyalty with payment type info
       if (cartState.customer) {
-        await updateCustomerLoyalty(cartState.customer.id, subtotal);
+        await updateCustomerLoyalty(
+          cartState.customer.id, 
+          subtotal,
+          paymentDetails.isCredit || false,
+          paymentDetails.isInstallment || false
+        );
       }
 
+      // Trigger cloud sync if online
       if (navigator.onLine) {
         setTimeout(() => {
           cloudSync.fullSync().catch(err => 
@@ -485,6 +544,7 @@ export default function Checkout() {
               .item { display: flex; justify-content: space-between; margin-bottom: 5px; }
               .total { border-top: 1px solid #000; padding-top: 10px; margin-top: 10px; font-weight: bold; }
               .footer { text-align: center; margin-top: 20px; font-size: 12px; }
+              .payment-note { background: #f0f0f0; padding: 5px; margin: 10px 0; font-size: 11px; text-align: center; }
             </style>
           </head>
           <body>
@@ -530,6 +590,11 @@ export default function Checkout() {
                 </div>
               ` : ''}
             </div>
+            ${lastSale?.notes ? `
+              <div class="payment-note">
+                ${lastSale.notes}
+              </div>
+            ` : ''}
             <div class="footer">
               <p>Thank you for your business!</p>
               <p style="font-size: 10px; margin-top: 10px;">${lastSale?.id ? `Transaction ID: ${lastSale.id}` : ''}</p>
@@ -754,7 +819,7 @@ export default function Checkout() {
                     {cartState.customer.name}
                   </p>
                   <p className={`text-[10px] ${currentTheme.colors.textMuted}`}>
-                    {cartState.customer.loyaltyPoints} pts
+                    {cartState.customer.loyaltyPoints} pts • {cartState.customer.transactionCount || 0} transactions
                   </p>
                 </div>
                 <button
