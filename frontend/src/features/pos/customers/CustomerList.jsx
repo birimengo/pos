@@ -1,65 +1,53 @@
-// src/features/pos/customers/CustomerList.jsx
+// src/features/pos/customers/CustomerList.jsx (updated with transaction summary)
 import { useState, useEffect } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useCustomers } from '../context/CustomerContext';
-import { useInventory } from '../context/InventoryContext';
 import { Icons } from '../../../components/ui/Icons';
 import CustomerDetailsModal from './CustomerDetailsModal';
+import { customerTransactionService } from '../services/customerTransactionService';
 
 export default function CustomerList() {
   const [view, setView] = useState('list');
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
-  const [sortBy, setSortBy] = useState('name'); // 'name', 'spent', 'points', 'frequency', 'lastVisit'
+  const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
-  const [filterType, setFilterType] = useState('all'); // 'all', 'hasCredit', 'hasInstallment', 'recent'
+  const [filterType, setFilterType] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [customerSummaries, setCustomerSummaries] = useState({});
+  const [loadingSummaries, setLoadingSummaries] = useState(false);
   
   const { theme, getTheme } = useTheme();
   const { state, dispatch } = useCustomers();
-  const { state: inventoryState } = useInventory();
   const currentTheme = getTheme(theme);
 
-  // Get customer transactions from inventory state or local storage
-  const getCustomerTransactions = (customerId) => {
-    // This would ideally come from a transaction context or database
-    // For now, we'll simulate with localStorage
-    const transactions = JSON.parse(localStorage.getItem('pos-transactions') || '[]');
-    return transactions.filter(t => t.customer?.id === customerId || t.customerId === customerId);
-  };
-
-  // Calculate customer stats
-  const getCustomerStats = (customer) => {
-    const transactions = getCustomerTransactions(customer.id);
-    const totalTransactions = transactions.length;
-    const totalSpent = transactions.reduce((sum, t) => sum + (t.total || 0), 0);
-    const averageTicket = totalTransactions > 0 ? totalSpent / totalTransactions : 0;
-    const lastTransaction = transactions.sort((a, b) => 
-      new Date(b.timestamp || b.createdAt) - new Date(a.timestamp || a.createdAt)
-    )[0];
-    
-    // Check for credit/installment transactions
-    const creditTransactions = transactions.filter(t => t.isCredit || t.notes?.includes('Credit sale'));
-    const installmentTransactions = transactions.filter(t => t.isInstallment || t.notes?.includes('Installment'));
-    const hasActiveCredit = creditTransactions.some(t => !t.fullyPaid);
-    const hasActiveInstallment = installmentTransactions.some(t => !t.fullyPaid);
-    
-    return {
-      totalTransactions,
-      totalSpent,
-      averageTicket,
-      lastTransaction,
-      creditCount: creditTransactions.length,
-      installmentCount: installmentTransactions.length,
-      hasActiveCredit,
-      hasActiveInstallment
+  // Load summaries for all customers
+  useEffect(() => {
+    const loadSummaries = async () => {
+      if (state.customers.length === 0) return;
+      
+      setLoadingSummaries(true);
+      const summaries = {};
+      
+      await Promise.all(
+        state.customers.map(async (customer) => {
+          const summary = await customerTransactionService.getCustomerSummary(customer.id);
+          if (summary) {
+            summaries[customer.id] = summary;
+          }
+        })
+      );
+      
+      setCustomerSummaries(summaries);
+      setLoadingSummaries(false);
     };
-  };
+
+    loadSummaries();
+  }, [state.customers]);
 
   // Sort and filter customers
   const processedCustomers = state.customers
     .filter(c => {
-      // Search filter
       const matchesSearch = 
         c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         c.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -67,22 +55,20 @@ export default function CustomerList() {
       
       if (!matchesSearch) return false;
       
-      // Transaction type filter
-      if (filterType !== 'all') {
-        const stats = getCustomerStats(c);
-        if (filterType === 'hasCredit' && !stats.hasActiveCredit) return false;
-        if (filterType === 'hasInstallment' && !stats.hasActiveInstallment) return false;
-        if (filterType === 'recent' && (!stats.lastTransaction || 
-            new Date(stats.lastTransaction.timestamp) < new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))) {
-          return false;
-        }
+      const summary = customerSummaries[c.id];
+      if (filterType === 'hasCredit' && (!summary || summary.creditCount === 0)) return false;
+      if (filterType === 'hasInstallment' && (!summary || summary.installmentCount === 0)) return false;
+      if (filterType === 'overdue' && (!summary || summary.overdueCount === 0)) return false;
+      if (filterType === 'recent' && (!summary || !summary.lastTransaction || 
+          new Date(summary.lastTransaction) < new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))) {
+        return false;
       }
       
       return true;
     })
     .sort((a, b) => {
-      const statsA = getCustomerStats(a);
-      const statsB = getCustomerStats(b);
+      const summaryA = customerSummaries[a.id];
+      const summaryB = customerSummaries[b.id];
       
       let comparison = 0;
       switch (sortBy) {
@@ -90,17 +76,17 @@ export default function CustomerList() {
           comparison = a.name.localeCompare(b.name);
           break;
         case 'spent':
-          comparison = (statsA.totalSpent || 0) - (statsB.totalSpent || 0);
+          comparison = (summaryA?.totalSpent || 0) - (summaryB?.totalSpent || 0);
           break;
         case 'points':
           comparison = (a.loyaltyPoints || 0) - (b.loyaltyPoints || 0);
           break;
         case 'frequency':
-          comparison = (statsA.totalTransactions || 0) - (statsB.totalTransactions || 0);
+          comparison = (summaryA?.totalTransactions || 0) - (summaryB?.totalTransactions || 0);
           break;
         case 'lastVisit':
-          const dateA = statsA.lastTransaction?.timestamp || a.lastVisit || '1970-01-01';
-          const dateB = statsB.lastTransaction?.timestamp || b.lastVisit || '1970-01-01';
+          const dateA = summaryA?.lastTransaction || a.lastVisit || '1970-01-01';
+          const dateB = summaryB?.lastTransaction || b.lastVisit || '1970-01-01';
           comparison = new Date(dateA) - new Date(dateB);
           break;
         default:
@@ -120,7 +106,7 @@ export default function CustomerList() {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
       setSortBy(field);
-      setSortOrder('desc'); // Default to descending for numeric fields
+      setSortOrder('desc');
     }
   };
 
@@ -204,6 +190,16 @@ export default function CustomerList() {
             Has Installment
           </button>
           <button
+            onClick={() => setFilterType('overdue')}
+            className={`px-3 py-1 text-xs rounded-full transition-colors ${
+              filterType === 'overdue'
+                ? 'bg-red-500 text-white'
+                : `${currentTheme.colors.hover} text-red-600 dark:text-red-400`
+            }`}
+          >
+            Overdue
+          </button>
+          <button
             onClick={() => setFilterType('recent')}
             className={`px-3 py-1 text-xs rounded-full transition-colors ${
               filterType === 'recent'
@@ -227,82 +223,100 @@ export default function CustomerList() {
       </div>
 
       {/* Customer Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {processedCustomers.map(customer => {
-          const stats = getCustomerStats(customer);
-          
-          return (
-            <div
-              key={customer.id}
-              onClick={() => handleViewCustomer(customer)}
-              className={`p-4 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.card} cursor-pointer transition-all hover:shadow-lg relative`}
-            >
-              {/* Credit/Installment Badges */}
-              <div className="absolute top-2 right-2 flex gap-1">
-                {stats.hasActiveCredit && (
-                  <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] rounded-full">
-                    Credit
-                  </span>
-                )}
-                {stats.hasActiveInstallment && (
-                  <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] rounded-full">
-                    Installment
-                  </span>
-                )}
-              </div>
+      {loadingSummaries ? (
+        <div className="flex justify-center py-12">
+          <Icons.refresh className={`animate-spin text-2xl ${currentTheme.colors.textMuted}`} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {processedCustomers.map(customer => {
+            const summary = customerSummaries[customer.id] || {
+              totalSpent: 0,
+              totalTransactions: 0,
+              averageTicket: 0,
+              creditCount: 0,
+              installmentCount: 0,
+              overdueCount: 0
+            };
+            
+            return (
+              <div
+                key={customer.id}
+                onClick={() => handleViewCustomer(customer)}
+                className={`p-4 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.card} cursor-pointer transition-all hover:shadow-lg relative`}
+              >
+                {/* Badges */}
+                <div className="absolute top-2 right-2 flex gap-1">
+                  {summary.creditCount > 0 && (
+                    <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] rounded-full">
+                      {summary.creditCount} Credit
+                    </span>
+                  )}
+                  {summary.installmentCount > 0 && (
+                    <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] rounded-full">
+                      {summary.installmentCount} Install
+                    </span>
+                  )}
+                  {summary.overdueCount > 0 && (
+                    <span className="px-2 py-0.5 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-[10px] rounded-full">
+                      {summary.overdueCount} Overdue
+                    </span>
+                  )}
+                </div>
 
-              <div className="flex justify-between items-start mb-3">
-                <div className="pr-16">
-                  <h3 className={`font-medium ${currentTheme.colors.text}`}>{customer.name}</h3>
-                  <p className={`text-xs ${currentTheme.colors.textMuted}`}>{customer.email}</p>
-                  <p className={`text-xs ${currentTheme.colors.textMuted}`}>{customer.phone}</p>
+                <div className="flex justify-between items-start mb-3 pr-16">
+                  <div>
+                    <h3 className={`font-medium ${currentTheme.colors.text}`}>{customer.name}</h3>
+                    <p className={`text-xs ${currentTheme.colors.textMuted}`}>{customer.email}</p>
+                    <p className={`text-xs ${currentTheme.colors.textMuted}`}>{customer.phone}</p>
+                  </div>
+                  <div className="flex gap-1">
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setSelectedCustomer(customer); setView('edit'); }}
+                      className={`p-1 rounded ${currentTheme.colors.hover}`}
+                    >
+                      <Icons.edit className={`text-sm ${currentTheme.colors.textSecondary}`} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-1">
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); setSelectedCustomer(customer); setView('edit'); }}
-                    className={`p-1 rounded ${currentTheme.colors.hover}`}
-                  >
-                    <Icons.edit className={`text-sm ${currentTheme.colors.textSecondary}`} />
-                  </button>
+                
+                {/* Stats Grid */}
+                <div className={`border-t ${currentTheme.colors.border} pt-3 grid grid-cols-2 gap-2 text-center`}>
+                  <div>
+                    <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Points</p>
+                    <p className={`text-sm font-bold ${currentTheme.accentText}`}>{customer.loyaltyPoints || 0}</p>
+                  </div>
+                  <div>
+                    <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Lifetime</p>
+                    <p className={`text-sm font-bold ${currentTheme.colors.text}`}>
+                      {customerTransactionService.formatCurrency(summary.totalSpent)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Transactions</p>
+                    <p className={`text-sm font-bold ${currentTheme.colors.text}`}>{summary.totalTransactions}</p>
+                  </div>
+                  <div>
+                    <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Average</p>
+                    <p className={`text-sm font-bold ${currentTheme.colors.text}`}>
+                      {customerTransactionService.formatCurrency(summary.averageTicket)}
+                    </p>
+                  </div>
+                  <div className="col-span-2">
+                    <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Last Visit</p>
+                    <p className={`text-xs ${currentTheme.colors.text}`}>
+                      {summary.lastTransaction 
+                        ? new Date(summary.lastTransaction).toLocaleDateString()
+                        : customer.lastVisit || 'Never'
+                      }
+                    </p>
+                  </div>
                 </div>
               </div>
-              
-              {/* Stats Grid */}
-              <div className={`border-t ${currentTheme.colors.border} pt-3 grid grid-cols-2 gap-2 text-center`}>
-                <div>
-                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Points</p>
-                  <p className={`text-sm font-bold ${currentTheme.accentText}`}>{customer.loyaltyPoints}</p>
-                </div>
-                <div>
-                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Spent</p>
-                  <p className={`text-sm font-bold ${currentTheme.colors.text}`}>
-                    ${(stats.totalSpent || customer.totalSpent || 0).toLocaleString()}
-                  </p>
-                </div>
-                <div>
-                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Transactions</p>
-                  <p className={`text-sm font-bold ${currentTheme.colors.text}`}>{stats.totalTransactions}</p>
-                </div>
-                <div>
-                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Average</p>
-                  <p className={`text-sm font-bold ${currentTheme.colors.text}`}>
-                    ${stats.averageTicket.toFixed(0)}
-                  </p>
-                </div>
-                <div className="col-span-2">
-                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Last Visit</p>
-                  <p className={`text-xs ${currentTheme.colors.text}`}>
-                    {stats.lastTransaction 
-                      ? new Date(stats.lastTransaction.timestamp).toLocaleDateString()
-                      : customer.lastVisit || 'Never'
-                    }
-                  </p>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Empty State */}
       {processedCustomers.length === 0 && (

@@ -4,33 +4,51 @@ declare interface transactionType {
 
 	getAllTransactionsLocally(): Promise<any>;
 
-	getTransactionsByDateRange(startDate: any, endDate: any): Promise<null | Date | any[]>;
+	getTransactionsByDateRange(startDate: any, endDate: any): Promise<any>;
 
-	getTransactionsByCustomer(customerId: any): Promise<Function | any[]>;
+	getTransactionsByCustomer(customerId: any): Promise<any>;
 
-	getPendingPayments(): Promise<Function | any[]>;
+	getPendingPayments(): Promise<any>;
 
-	getOverduePayments(): Promise<null | boolean | Date | any[]>;
+	getOverduePayments(): Promise<any>;
 
-	addToSyncQueue(transactionId: any): Promise<void>;
+	addToSyncQueue(transactionId: any): Promise<any>;
 
-	syncTransactionToCloud(transactionId: any): Promise<{	}>;
+	removeFromSyncQueue(transactionId: any): Promise<any>;
 
-	syncAllPending(): Promise<{	}>;
+	syncTransactionToCloud(transactionId: any): Promise<any>;
+
+	syncAllPending(): Promise<any>;
+
+	recordPayment(transactionId: any, paymentAmount: any, paymentMethod: any, Cash: any, notes: any): Promise<any>;
+
+	extendDueDate(transactionId: any, newDueDate: any): Promise<any>;
+
+	getPaymentSchedule(transactionId: any): Promise<any>;
 
 	getDailySales(date: any, Date: any): Promise<any>;
 
 	getMonthlySales(year: any, month: any): Promise<any>;
 
-	getTopProducts(limit: number): Promise<null | any[]>;
+	getTopProducts(limit: number): Promise<any>;
 
 	getPaymentMethodsBreakdown(startDate: any, endDate: any): Promise<any>;
 
-	recordPayment(transactionId: any, paymentAmount: any): Promise<{	}>;
+	isOverdue(transaction: any): any;
 
-	extendDueDate(transactionId: any, newDueDate: any): Promise<{	}>;
+	getDaysOverdue(transaction: any): any;
 
-	getSyncStatus(): Promise<null>;
+	calculateNextPaymentDue(transaction: any): any;
 
-	deleteTransaction(transactionId: any): Promise<{	}>;
+	formatCurrency(amount: any): any;
+
+	formatDate(dateString: any): any;
+
+	formatShortDate(dateString: any): any;
+
+	getSyncStatus(): Promise<any>;
+
+	deleteTransaction(transactionId: any): Promise<any>;
+
+	getCustomerBalance(customerId: any): Promise<any>;
 }

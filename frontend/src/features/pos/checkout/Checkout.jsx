@@ -1,5 +1,5 @@
 // src/features/pos/checkout/Checkout.jsx
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useInventory } from '../context/InventoryContext';
 import { useCart } from '../context/CartContext';
@@ -12,23 +12,20 @@ import { opfs } from '../services/opfsService';
 import { db } from '../services/database';
 import { transactionService } from '../services/transactionService';
 import { cloudSync } from '../services/cloudSyncService';
+import { customerService } from '../services/customerService';
 
-// Helper function to format price without .00 and with commas
+// Helper function to format price
 const formatPrice = (price) => {
-  // Round to 2 decimal places first
   const rounded = Math.round(price * 100) / 100;
-  
-  // Check if it's a whole number (no cents)
   if (rounded % 1 === 0) {
-    // Format with commas but no decimal places
     return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   } else {
-    // Format with commas and 2 decimal places
     return rounded.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   }
 };
 
 export default function Checkout() {
+  // State management
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -39,19 +36,21 @@ export default function Checkout() {
   const [taxRate, setTaxRate] = useState(0.1);
   const [currentImageIndex, setCurrentImageIndex] = useState({});
   const [processingSale, setProcessingSale] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
   const [windowDimensions, setWindowDimensions] = useState({
     width: typeof window !== 'undefined' ? window.innerWidth : 0,
     height: typeof window !== 'undefined' ? window.innerHeight : 0
   });
   
+  // Hooks
   const { theme, getTheme } = useTheme();
   const { state: inventoryState, dispatch: inventoryDispatch } = useInventory();
   const { state: cartState, dispatch: cartDispatch } = useCart();
   const { state: customerState, dispatch: customerDispatch } = useCustomers();
   const currentTheme = getTheme(theme);
 
-  // Get theme-specific colors for components
-  const getThemeSpecificClasses = () => {
+  // Theme-specific classes
+  const getThemeSpecificClasses = useCallback(() => {
     switch(theme) {
       case 'dark':
         return {
@@ -83,7 +82,7 @@ export default function Checkout() {
           blueText: 'text-blue-600',
           blueBg: 'bg-blue-100'
         };
-      default: // light
+      default:
         return {
           processingBg: 'bg-blue-50',
           processingText: 'text-blue-600',
@@ -99,11 +98,11 @@ export default function Checkout() {
           blueBg: 'bg-blue-50'
         };
     }
-  };
+  }, [theme]);
 
   const themeSpecific = getThemeSpecificClasses();
 
-  // Track window dimensions for responsive layout
+  // Window resize handler
   useEffect(() => {
     const handleResize = () => {
       setWindowDimensions({
@@ -116,13 +115,25 @@ export default function Checkout() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Determine if we're on a square-like display (aspect ratio close to 1:1)
+  // Load sync status
+  useEffect(() => {
+    const loadSyncStatus = async () => {
+      const status = await transactionService.getSyncStatus();
+      setSyncStatus(status);
+    };
+    
+    loadSyncStatus();
+    const interval = setInterval(loadSyncStatus, 30000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // Layout calculations
   const isSquareDisplay = useMemo(() => {
     const aspectRatio = windowDimensions.width / windowDimensions.height;
     return aspectRatio > 0.8 && aspectRatio < 1.2;
   }, [windowDimensions]);
 
-  // Adjust grid columns based on screen size and shape
   const productsGridCols = useMemo(() => {
     if (windowDimensions.width < 640) return 'grid-cols-2';
     if (windowDimensions.width < 1024) return 'grid-cols-3';
@@ -130,27 +141,39 @@ export default function Checkout() {
     return 'grid-cols-3';
   }, [windowDimensions.width, isSquareDisplay]);
 
-  // Adjust layout based on display shape
   const mainLayoutCols = useMemo(() => {
     if (windowDimensions.width < 768) return 'grid-cols-1';
     if (isSquareDisplay) return 'grid-cols-2';
     return 'grid-cols-1 lg:grid-cols-3';
   }, [windowDimensions.width, isSquareDisplay]);
 
-  // Adjust cart column span based on display shape
   const cartColSpan = useMemo(() => {
     if (windowDimensions.width < 768) return '';
     if (isSquareDisplay) return 'lg:col-span-1';
     return 'lg:col-span-1';
   }, [windowDimensions.width, isSquareDisplay]);
 
-  // Adjust products column span based on display shape
   const productsColSpan = useMemo(() => {
     if (windowDimensions.width < 768) return '';
     if (isSquareDisplay) return 'lg:col-span-1';
     return 'lg:col-span-2';
   }, [windowDimensions.width, isSquareDisplay]);
 
+  const productsGridHeight = useMemo(() => {
+    if (windowDimensions.height < 600) return 'max-h-[300px]';
+    if (windowDimensions.height < 800) return 'max-h-[400px]';
+    if (isSquareDisplay) return 'max-h-[500px]';
+    return 'max-h-[600px]';
+  }, [windowDimensions.height, isSquareDisplay]);
+
+  const cartItemsHeight = useMemo(() => {
+    if (windowDimensions.height < 600) return 'max-h-[200px]';
+    if (windowDimensions.height < 800) return 'max-h-[250px]';
+    if (isSquareDisplay) return 'max-h-[300px]';
+    return 'max-h-[400px]';
+  }, [windowDimensions.height, isSquareDisplay]);
+
+  // Product filtering
   const categories = useMemo(() => {
     return ['All', ...new Set(inventoryState.products.map(p => p.category).filter(Boolean))];
   }, [inventoryState.products]);
@@ -165,6 +188,7 @@ export default function Checkout() {
     });
   }, [inventoryState.products, searchTerm, selectedCategory]);
 
+  // Product images
   const [productImages, setProductImages] = useState({});
   
   useEffect(() => {
@@ -178,10 +202,11 @@ export default function Checkout() {
             try {
               const fileName = imagePath.split('/').pop();
               const file = await opfs.readFile(fileName, 'products');
-              if (file) {
+              if (file && file.size > 0) {
                 productImageList.push({
                   url: URL.createObjectURL(file),
-                  type: 'local'
+                  type: 'local',
+                  file: file
                 });
               }
             } catch (error) {
@@ -237,6 +262,7 @@ export default function Checkout() {
     };
   }, [filteredProducts]);
 
+  // Image navigation
   const nextImage = (productId, e) => {
     e.stopPropagation();
     const images = productImages[productId];
@@ -259,6 +285,7 @@ export default function Checkout() {
     }
   };
 
+  // Cart operations
   const addToCart = (product) => {
     const currentInCart = cartState.items.find(item => item.id === product.id)?.quantity || 0;
     if (currentInCart >= product.stock) {
@@ -292,38 +319,51 @@ export default function Checkout() {
     }
   };
 
-  // IMPROVED: Check for duplicate emails only when adding NEW customers
-  // Existing customers can make multiple purchases without restriction
-  const handleSelectCustomer = (customer) => {
-    // Check if this is an existing customer (they already have an ID in our system)
+  // Customer selection
+  const handleSelectCustomer = async (customer) => {
+    // Check if this is an existing customer
     const isExistingCustomer = customerState.customers.some(c => c.id === customer.id);
     
     // Only validate email for NEW customers
     if (!isExistingCustomer && customer.email) {
-      // This is a NEW customer with an email - check if email is already used by another customer
+      // Check if email already exists
       const existingCustomerWithEmail = customerState.customers.find(c => 
         c.email && c.email.toLowerCase() === customer.email.toLowerCase()
       );
       
       if (existingCustomerWithEmail) {
-        alert(`Cannot create new customer: Email ${customer.email} is already registered to ${existingCustomerWithEmail.name}. Please select the existing customer from the list or use a different email.`);
+        alert(`Cannot create new customer: Email ${customer.email} is already registered to ${existingCustomerWithEmail.name}.`);
         return;
       }
     }
     
-    // For existing customers OR new customers with unique email, allow selection
+    // If new customer, save to database
+    if (!isExistingCustomer) {
+      try {
+        const result = await customerService.saveCustomerLocally(customer);
+        if (result.success) {
+          customer.id = result.customerId;
+          customerDispatch({ type: 'ADD_CUSTOMER', payload: customer });
+        }
+      } catch (error) {
+        console.error('Failed to save customer:', error);
+      }
+    }
+    
     cartDispatch({ type: 'SET_CUSTOMER', payload: customer });
     setShowCustomerModal(false);
   };
 
-  const calculateTax = () => {
+  // Calculations
+  const calculateTax = useCallback(() => {
     return (cartState.subtotal - cartState.discount) * taxRate;
-  };
+  }, [cartState.subtotal, cartState.discount, taxRate]);
 
-  const calculateTotal = () => {
+  const calculateTotal = useCallback(() => {
     return (cartState.subtotal - cartState.discount) + calculateTax();
-  };
+  }, [cartState.subtotal, cartState.discount, calculateTax]);
 
+  // Stock update
   const updateProductStock = async (productId, quantitySold) => {
     const product = inventoryState.products.find(p => p.id === productId);
     if (!product) return;
@@ -344,7 +384,7 @@ export default function Checkout() {
         syncRequired: true
       };
       
-      await db.put('products', updatedProduct);
+      await db.saveProduct(updatedProduct);
       console.log(`✅ Stock updated for ${product.name}: ${newStock} remaining`);
       
       await db.addToSyncQueue({
@@ -353,29 +393,29 @@ export default function Checkout() {
         timestamp: new Date().toISOString()
       });
     } catch (error) {
-      console.error('❌ Failed to update stock in database:', error);
+      console.error('❌ Failed to update stock:', error);
     }
   };
 
+  // Save transaction
   const saveTransaction = async (saleData) => {
     try {
-      // IMPORTANT: Create a clean customer object for the transaction
-      // For local storage, we want to keep the customer ID reference
-      // But for cloud sync, we need to handle it carefully in the service layer
+      // Prepare customer data
       const customerForTransaction = saleData.customer ? {
-        // Keep the local ID for local reference - this is fine for IndexedDB
-        id: saleData.customer.id || saleData.customer._id,
+        id: saleData.customer.id,
+        _id: saleData.customer._id,
         name: saleData.customer.name,
         email: saleData.customer.email || '',
         phone: saleData.customer.phone || '',
         loyaltyPoints: saleData.customer.loyaltyPoints || 0
       } : null;
 
+      // Prepare transaction data
       const transactionData = {
         receiptNumber: saleData.receiptNumber,
         items: saleData.items.map(item => ({
-          // For local storage, we want to keep product reference
-          productId: item.id, // Keep for local reference
+          productId: item.id,
+          _id: item._id,
           name: item.name,
           sku: item.sku,
           price: item.price,
@@ -391,23 +431,33 @@ export default function Checkout() {
         customer: customerForTransaction,
         notes: saleData.notes || '',
         timestamp: saleData.timestamp,
-        // Payment status fields
-        status: saleData.status || 'completed',
-        remaining: saleData.remaining || 0,
-        dueDate: saleData.dueDate || null,
-        creditSchedule: saleData.creditSchedule || null,
-        // NEW: Track payment type for customer statistics
+        
+        // Payment tracking
         isCredit: saleData.isCredit || false,
         isInstallment: saleData.isInstallment || false,
+        dueDate: saleData.dueDate || null,
+        
+        // Initial payment info
+        initialPayment: saleData.isCredit || saleData.isInstallment 
+          ? saleData.initialPayment || 0 
+          : saleData.total,
+        
         // Sync flags
         synced: false,
         syncRequired: true
       };
 
+      // Save to database
       const result = await transactionService.saveTransactionLocally(transactionData);
       
       if (result.success) {
-        console.log('✅ Transaction saved:', result.transactionId);
+        console.log('✅ Transaction saved:', {
+          id: result.transactionId,
+          receiptNumber: result.transaction.receiptNumber,
+          total: result.transaction.total,
+          remaining: result.transaction.remaining
+        });
+        
         return result.transaction;
       } else {
         throw new Error(result.error);
@@ -418,50 +468,39 @@ export default function Checkout() {
     }
   };
 
-  // UPDATED: Track credit/installment status for customer statistics
+  // Update customer loyalty
   const updateCustomerLoyalty = async (customerId, amount, isCredit = false, isInstallment = false) => {
-    const pointsEarned = Math.floor(amount);
+    const pointsEarned = Math.floor(amount / 10); // 1 point per $10
     
-    customerDispatch({
-      type: 'ADD_LOYALTY_POINTS',
-      payload: {
-        customerId,
-        points: pointsEarned,
-        amount,
-        isCredit,
-        isInstallment
-      }
-    });
-
     try {
-      const customer = customerState.customers.find(c => c.id === customerId);
-      if (customer) {
-        const updatedCustomer = {
-          ...customer,
-          loyaltyPoints: (customer.loyaltyPoints || 0) + pointsEarned,
-          totalSpent: (customer.totalSpent || 0) + amount,
-          lastVisit: new Date().toISOString().split('T')[0],
-          updatedAt: new Date().toISOString(),
-          synced: false,
-          // Track credit/installment counts
-          creditCount: (customer.creditCount || 0) + (isCredit ? 1 : 0),
-          installmentCount: (customer.installmentCount || 0) + (isInstallment ? 1 : 0),
-          transactionCount: (customer.transactionCount || 0) + 1
-        };
-        
-        await db.put('customers', updatedCustomer);
-        
-        await db.addToSyncQueue({
-          type: 'customer',
-          customerId: customer.id,
-          timestamp: new Date().toISOString()
+      const result = await customerService.addLoyaltyPoints(
+        customerId,
+        pointsEarned,
+        amount,
+        { isCredit, isInstallment }
+      );
+      
+      if (result.success) {
+        // Update context
+        customerDispatch({
+          type: 'ADD_LOYALTY_POINTS',
+          payload: {
+            customerId,
+            points: pointsEarned,
+            amount,
+            isCredit,
+            isInstallment
+          }
         });
+        
+        console.log(`✅ Loyalty points added: +${pointsEarned} for customer ${customerId}`);
       }
     } catch (error) {
-      console.error('❌ Failed to update customer in database:', error);
+      console.error('❌ Failed to update loyalty:', error);
     }
   };
 
+  // Handle payment completion
   const handlePaymentComplete = async (paymentDetails) => {
     setProcessingSale(true);
     
@@ -475,6 +514,7 @@ export default function Checkout() {
       const total = calculateTotal();
       const subtotal = cartState.subtotal - cartState.discount;
 
+      // Prepare sale data
       const sale = {
         ...cartState,
         ...paymentDetails,
@@ -486,17 +526,18 @@ export default function Checkout() {
         taxRate,
         subtotal: cartState.subtotal,
         total,
-        // Pass through payment type flags
         isCredit: paymentDetails.isCredit || false,
-        isInstallment: paymentDetails.isInstallment || false
+        isInstallment: paymentDetails.isInstallment || false,
+        initialPayment: paymentDetails.initialPayment || total
       };
 
+      // Save transaction
       const savedTransaction = await saveTransaction(sale);
 
-      // Update customer loyalty with payment type info
+      // Update customer loyalty if customer exists
       if (cartState.customer) {
         await updateCustomerLoyalty(
-          cartState.customer.id, 
+          cartState.customer.id,
           subtotal,
           paymentDetails.isCredit || false,
           paymentDetails.isInstallment || false
@@ -506,24 +547,31 @@ export default function Checkout() {
       // Trigger cloud sync if online
       if (navigator.onLine) {
         setTimeout(() => {
-          cloudSync.fullSync().catch(err => 
-            console.log('Background sync queued for later:', err.message)
+          transactionService.syncAllPending().catch(err => 
+            console.log('Background sync:', err.message)
           );
         }, 1000);
       }
 
+      // Update UI
       setLastSale({ ...sale, id: savedTransaction?.id });
       setShowPaymentModal(false);
       setShowReceipt(true);
 
+      // Show success message
+      if (paymentDetails.isCredit || paymentDetails.isInstallment) {
+        alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale recorded! Initial payment: ${formatPrice(paymentDetails.initialPayment || 0)}. Remaining: ${formatPrice(total - (paymentDetails.initialPayment || 0))}`);
+      }
+
     } catch (error) {
       console.error('❌ Payment processing failed:', error);
-      alert('Payment processed but failed to save to database. Please check your connection.');
+      alert('Payment processed but failed to save. Will sync when online.');
     } finally {
       setProcessingSale(false);
     }
   };
 
+  // Receipt handlers
   const handlePrintReceipt = () => {
     const printWindow = window.open('', '_blank');
     if (printWindow) {
@@ -545,6 +593,7 @@ export default function Checkout() {
               .total { border-top: 1px solid #000; padding-top: 10px; margin-top: 10px; font-weight: bold; }
               .footer { text-align: center; margin-top: 20px; font-size: 12px; }
               .payment-note { background: #f0f0f0; padding: 5px; margin: 10px 0; font-size: 11px; text-align: center; }
+              .credit-info { background: #fff3cd; padding: 5px; margin: 10px 0; font-size: 11px; text-align: center; border-left: 3px solid #ffc107; }
             </style>
           </head>
           <body>
@@ -590,6 +639,14 @@ export default function Checkout() {
                 </div>
               ` : ''}
             </div>
+            ${lastSale?.isCredit || lastSale?.isInstallment ? `
+              <div class="credit-info">
+                <strong>${lastSale.isCredit ? 'CREDIT SALE' : 'INSTALLMENT SALE'}</strong><br>
+                Initial Payment: $${formatPrice(lastSale.initialPayment || 0)}<br>
+                Remaining Balance: $${formatPrice(total - (lastSale.initialPayment || 0))}<br>
+                Due Date: ${lastSale.dueDate ? new Date(lastSale.dueDate).toLocaleDateString() : 'Not set'}
+              </div>
+            ` : ''}
             ${lastSale?.notes ? `
               <div class="payment-note">
                 ${lastSale.notes}
@@ -597,7 +654,7 @@ export default function Checkout() {
             ` : ''}
             <div class="footer">
               <p>Thank you for your business!</p>
-              <p style="font-size: 10px; margin-top: 10px;">${lastSale?.id ? `Transaction ID: ${lastSale.id}` : ''}</p>
+              <p style="font-size: 10px; margin-top: 10px;">Transaction ID: ${lastSale?.id || ''}</p>
             </div>
           </body>
         </html>
@@ -632,41 +689,36 @@ export default function Checkout() {
     }
   };
 
-  // Calculate dynamic heights based on window dimensions
-  const productsGridHeight = useMemo(() => {
-    if (windowDimensions.height < 600) return 'max-h-[300px]';
-    if (windowDimensions.height < 800) return 'max-h-[400px]';
-    if (isSquareDisplay) return 'max-h-[500px]';
-    return 'max-h-[600px]';
-  }, [windowDimensions.height, isSquareDisplay]);
-
-  const cartItemsHeight = useMemo(() => {
-    if (windowDimensions.height < 600) return 'max-h-[200px]';
-    if (windowDimensions.height < 800) return 'max-h-[250px]';
-    if (isSquareDisplay) return 'max-h-[300px]';
-    return 'max-h-[400px]';
-  }, [windowDimensions.height, isSquareDisplay]);
-
   return (
     <div className="h-full flex flex-col m-0 p-0">
-      {/* Header - Ultra Compact with theme support */}
-      <div className="flex justify-end items-center m-0 p-0">
-        <span className={`text-[12px] m-0 p-0`}
+      {/* Header */}
+      <div className="flex justify-between items-center m-0 p-1">
+        <div className="flex items-center gap-2">
+          {syncStatus && syncStatus.unsynced > 0 && (
+            <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
+              syncStatus.isOnline ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700'
+            }`}>
+              <Icons.cloud className="text-xs" />
+              {syncStatus.unsynced} pending
+            </span>
+          )}
+        </div>
+        <span className={`text-[12px]`}
           style={{ color: theme === 'light' ? '#4b5563' : currentTheme.colors.textSecondary }}>
-          products {inventoryState.products.length}
+          {inventoryState.products.length} products
         </span>
         {processingSale && (
-          <span className={`flex items-center gap-0.5 px-1 py-0.5 rounded-sm text-[8px] ml-0.5 m-0 ${themeSpecific.processingBg} ${themeSpecific.processingText}`}>
-            <Icons.refresh className="animate-spin text-[8px] m-0 p-0" />
+          <span className={`flex items-center gap-0.5 px-1 py-0.5 rounded-sm text-[8px] ${themeSpecific.processingBg} ${themeSpecific.processingText}`}>
+            <Icons.refresh className="animate-spin text-[8px]" />
           </span>
         )}
       </div>
 
-      {/* Main Grid - Adaptive layout for square displays */}
-      <div className={`grid ${mainLayoutCols} gap-3 sm:gap-4 flex-1 min-h-0`}>
-        {/* Left Column - Products */}
+      {/* Main Grid */}
+      <div className={`grid ${mainLayoutCols} gap-3 sm:gap-4 flex-1 min-h-0 p-1`}>
+        {/* Products Column */}
         <div className={`${productsColSpan} flex flex-col space-y-3 min-h-0`}>
-          {/* Search - Compact */}
+          {/* Search */}
           <div className="relative flex-shrink-0">
             <Icons.search className={`absolute left-2.5 top-1/2 -translate-y-1/2 ${currentTheme.colors.textMuted} text-sm`} />
             <input
@@ -674,11 +726,11 @@ export default function Checkout() {
               placeholder="Search products..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className={`w-full pl-8 pr-3 py-2 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow`}
+              className={`w-full pl-8 pr-3 py-2 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} focus:outline-none focus:ring-2 focus:ring-blue-500`}
             />
           </div>
 
-          {/* Categories - Scrollable row with theme support */}
+          {/* Categories */}
           <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-thin flex-shrink-0">
             {categories.map(category => (
               <button
@@ -695,7 +747,7 @@ export default function Checkout() {
             ))}
           </div>
 
-          {/* Products Grid - Scrollable with dynamic height */}
+          {/* Products Grid */}
           <div className={`flex-1 overflow-y-auto ${productsGridHeight} min-h-0 scrollbar-thin`}>
             <div className={`grid ${productsGridCols} gap-2 p-1`}>
               {filteredProducts.length > 0 ? (
@@ -723,6 +775,9 @@ export default function Checkout() {
                               src={currentImage.url} 
                               alt={product.name}
                               className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.target.src = '/placeholder-product.png';
+                              }}
                             />
                             
                             {/* Image Navigation */}
@@ -730,13 +785,13 @@ export default function Checkout() {
                               <>
                                 <button
                                   onClick={(e) => prevImage(product.id, e)}
-                                  className="absolute left-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 text-xs"
+                                  className="absolute left-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 text-xs hover:bg-black/70"
                                 >
                                   ‹
                                 </button>
                                 <button
                                   onClick={(e) => nextImage(product.id, e)}
-                                  className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 text-xs"
+                                  className="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 text-xs hover:bg-black/70"
                                 >
                                   ›
                                 </button>
@@ -767,7 +822,7 @@ export default function Checkout() {
                         </span>
                       </div>
 
-                      {/* Product Info - Updated with blue name and price, and SKU display */}
+                      {/* Product Info */}
                       <h3 className={`text-xs font-medium mb-1 text-blue-600 dark:text-blue-400 line-clamp-2 h-8`}>
                         {product.name}
                       </h3>
@@ -789,7 +844,7 @@ export default function Checkout() {
                         )}
                       </div>
 
-                      {/* SKU Display */}
+                      {/* SKU */}
                       <div className="flex items-center text-[9px] text-gray-500 dark:text-gray-400">
                         <span className="truncate">SKU: {product.sku}</span>
                       </div>
@@ -808,7 +863,7 @@ export default function Checkout() {
           </div>
         </div>
 
-        {/* Right Column - Cart */}
+        {/* Cart Column */}
         <div className={`${cartColSpan} ${currentTheme.colors.card} rounded-lg border ${currentTheme.colors.border} p-3 flex flex-col space-y-3 min-h-0 ${isSquareDisplay ? 'sticky top-0' : 'lg:sticky lg:top-4'}`}>
           {/* Customer Section */}
           <div className="flex-shrink-0">
@@ -819,7 +874,7 @@ export default function Checkout() {
                     {cartState.customer.name}
                   </p>
                   <p className={`text-[10px] ${currentTheme.colors.textMuted}`}>
-                    {cartState.customer.loyaltyPoints} pts • {cartState.customer.transactionCount || 0} transactions
+                    {cartState.customer.loyaltyPoints || 0} pts • {cartState.customer.transactionCount || 0} transactions
                   </p>
                 </div>
                 <button
@@ -869,14 +924,12 @@ export default function Checkout() {
                 
                 return (
                   <div key={item.id} className={`p-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.card} space-y-2`}>
-                    {/* Item Header - No Image */}
+                    {/* Item Header */}
                     <div className="flex items-start gap-1">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start justify-between gap-1">
                           <p className={`text-xs font-medium truncate max-w-[100px] ${
-                            theme === 'dark' 
-                              ? 'text-blue-400' 
-                              : 'text-gray-600'
+                            theme === 'dark' ? 'text-blue-400' : 'text-gray-600'
                           }`}>
                             {item.name}
                           </p>
@@ -897,7 +950,7 @@ export default function Checkout() {
                       </div>
                     </div>
 
-                    {/* Quantity Controls - Ultra Compact */}
+                    {/* Quantity Controls */}
                     <div className="flex items-center justify-between mt-1">
                       <div className="flex items-center gap-0.5">
                         <button
@@ -941,7 +994,7 @@ export default function Checkout() {
             <div className="flex gap-1 flex-shrink-0">
               <input
                 type="text"
-                placeholder="Discount"
+                placeholder="Discount code"
                 value={discountCode}
                 onChange={(e) => setDiscountCode(e.target.value.toUpperCase())}
                 className={`flex-1 px-2 py-1.5 text-xs rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
@@ -956,7 +1009,7 @@ export default function Checkout() {
             </div>
           )}
 
-          {/* Order Summary - Ultra Compact with Blue Values */}
+          {/* Order Summary */}
           <div className={`pt-1.5 border-t ${currentTheme.colors.border} flex-shrink-0`}>
             <div className="flex justify-between items-center text-[14px]">
               <span className={currentTheme.colors.textSecondary}>Subtotal</span>
@@ -965,7 +1018,7 @@ export default function Checkout() {
             {cartState.discount > 0 && (
               <div className="flex justify-between items-center text-[12px]">
                 <span className={currentTheme.colors.textSecondary}>Discount</span>
-                <span className={`${theme === 'dark' ? 'text-green-400' : theme === 'ocean' ? 'text-emerald-600' : 'text-green-600'}`}>
+                <span className="text-green-600">
                   -${formatPrice(cartState.discount)}
                 </span>
               </div>
@@ -984,7 +1037,7 @@ export default function Checkout() {
 
           {/* Notes */}
           <textarea
-            placeholder="Notes..."
+            placeholder="Add notes..."
             rows="1"
             value={cartState.notes}
             onChange={(e) => cartDispatch({ type: 'SET_NOTES', payload: e.target.value })}
@@ -1017,7 +1070,7 @@ export default function Checkout() {
           }) && (
             <div className={`flex items-center gap-1.5 p-2 rounded-lg text-xs ${themeSpecific.lowStockBg} ${themeSpecific.lowStockText} flex-shrink-0`}>
               <Icons.alert className="text-sm" />
-              <span className="truncate">Low stock</span>
+              <span className="truncate">Low stock on some items</span>
             </div>
           )}
         </div>

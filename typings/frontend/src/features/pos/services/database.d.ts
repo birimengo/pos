@@ -2,9 +2,17 @@
 declare interface itemType {
 	put(storeName: any, data: any): Promise<any>;
 
-	delete(storeName: any, id: any): Promise<void>;
+	_saveCustomer(db: any, data: any): Promise<any>;
+
+	_saveTransaction(db: any, data: any): Promise<any>;
+
+	_saveProduct(db: any, data: any): Promise<any>;
+
+	delete(storeName: any, id: any): Promise<any>;
 
 	query(storeName: any, indexName: any, value: any): Promise<any>;
+
+	queryRange(storeName: any, indexName: any, lower: any, upper: any, lowerOpen: any, upperOpen: boolean): Promise<any>;
 
 	saveProduct(product: any): Promise<any>;
 
@@ -14,9 +22,11 @@ declare interface itemType {
 
 	getProductsByCategory(category: any): Promise<any>;
 
-	getUnsyncedProducts(): Promise<Function>;
+	getProductBySku(sku: any): Promise<any>;
 
-	markProductSynced(id: any, cloudId: any): Promise<void>;
+	getUnsyncedProducts(): Promise<any>;
+
+	markProductSynced(id: any, cloudId: any): Promise<any>;
 
 	deleteProduct(id: any): Promise<any>;
 
@@ -30,39 +40,65 @@ declare interface itemType {
 
 	getCustomerByPhone(phone: any): Promise<any>;
 
+	getCustomerByCloudId(cloudId: any): Promise<any>;
+
+	getUnsyncedCustomers(): Promise<any>;
+
+	markCustomerSynced(id: any, cloudId: any): Promise<any>;
+
 	saveTransaction(transaction: any): Promise<any>;
 
 	getTransaction(id: any): Promise<any>;
 
 	getTransactions(): Promise<any>;
 
-	getTransactionsByDateRange(startDate: any, endDate: any): Promise<null | Date>;
+	getTransactionsByDateRange(startDate: any, endDate: any): Promise<any>;
 
 	getTransactionsByCustomer(customerId: any): Promise<any>;
 
 	getTransactionsByPaymentMethod(paymentMethod: any): Promise<any>;
 
-	getUnsyncedTransactions(): Promise<Function>;
+	getCreditTransactions(): Promise<any>;
 
-	markTransactionSynced(id: any, cloudId: any): Promise<void>;
+	getInstallmentTransactions(): Promise<any>;
 
-	getDailySales(date: any): Promise<null>;
+	getPendingPayments(): Promise<any>;
 
-	addToSyncQueue(item: any): Promise<null>;
+	getOverdueTransactions(): Promise<any>;
+
+	getUnsyncedTransactions(): Promise<any>;
+
+	markTransactionSynced(id: any, cloudId: any): Promise<any>;
+
+	getDailySales(date: any, Date: any): Promise<any>;
+
+	_isOverdue(transaction: any): any;
+
+	addToSyncQueue(item: any): Promise<any>;
 
 	getSyncQueue(): Promise<any>;
 
+	getSyncQueueItem(type: any, referenceId: any): Promise<any>;
+
+	getPendingSyncItems(): Promise<any>;
+
+	updateSyncQueueItem(id: any, updates: any): Promise<any>;
+
 	deleteSyncQueueItem(id: any): Promise<any>;
 
-	clearSyncQueue(): Promise<void>;
+	clearSyncQueue(): Promise<any>;
 
 	getSetting(key: any): Promise<any>;
 
-	setSetting(key: any, value: any): Promise<void>;
+	setSetting(key: any, value: any): Promise<any>;
 
-	clearAllStores(): Promise<void>;
+	clearAllStores(): Promise<any>;
 
 	getDatabaseStats(): Promise<any>;
 
-	fixEmailIndex(): Promise<{	}>;
+	getSyncStats(): Promise<any>;
+
+	fixEmailIndex(): Promise<any>;
+
+	vacuum(): Promise<any>;
 }
