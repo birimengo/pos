@@ -1,4 +1,5 @@
 // src/features/pos/services/api.js
+
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
@@ -22,7 +23,15 @@ class API {
         if (error.code === 'ERR_NETWORK') {
           console.error('🌐 Network error - backend may be down');
         } else if (error.response) {
-          console.error(`❌ API Error ${error.response.status}:`, error.response.data);
+          // Only log actual errors (500+), not client errors (4xx)
+          if (error.response.status >= 500) {
+            console.error(`❌ Server Error ${error.response.status}:`, error.response.data);
+          } else if (error.response.status >= 400 && error.response.status < 500) {
+            // Client errors (4xx) - log as warnings only for non-404
+            if (error.response.status !== 404) {
+              console.warn(`⚠️ Client Error ${error.response.status}:`, error.response.data);
+            }
+          }
         }
         return Promise.reject(error);
       }
@@ -41,7 +50,6 @@ class API {
     formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
     formData.append('folder', folder);
     
-    // Add timestamp to avoid duplicate detection
     formData.append('public_id', `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
 
     try {
@@ -60,7 +68,7 @@ class API {
           },
           onUploadProgress: (progressEvent) => {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            if (percentCompleted % 25 === 0) { // Log every 25%
+            if (percentCompleted % 25 === 0) {
               console.log(`📤 Upload progress: ${percentCompleted}%`);
             }
           }
@@ -79,7 +87,6 @@ class API {
         message: error.response?.data?.error?.message || error.message
       });
 
-      // Retry logic (max 3 retries)
       if (retryCount < 3) {
         console.log(`🔄 Retrying upload (${retryCount + 1}/3)...`);
         await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
@@ -142,6 +149,9 @@ class API {
       const response = await this.client.get(`/products/${id}`);
       return { success: true, product: response.data };
     } catch (error) {
+      if (error.response?.status === 404) {
+        return { success: false, product: null, notFound: true };
+      }
       console.error('❌ Get product error:', error.message);
       return { success: false, error: error.message, product: null };
     }
@@ -175,36 +185,28 @@ class API {
     try {
       console.log('🔄 Syncing transaction:', transactionData.receiptNumber);
       
-      // Create a deep clean copy to avoid any unintended mutations
       const cleanData = JSON.parse(JSON.stringify(transactionData));
       
-      // Remove any local-only fields
       delete cleanData.id;
       delete cleanData.syncRequired;
       delete cleanData.syncError;
       delete cleanData.lastSyncAttempt;
       
-      // Ensure customer object doesn't have any id fields
       if (cleanData.customer) {
-        // Remove any id field that might cause ObjectId casting errors
         delete cleanData.customer.id;
         delete cleanData.customer._id;
         
-        // Create a clean customer object with only valid fields
         const validCustomer = {};
-        
         if (cleanData.customer.name) validCustomer.name = cleanData.customer.name;
         if (cleanData.customer.email) validCustomer.email = cleanData.customer.email;
         if (cleanData.customer.loyaltyPoints) validCustomer.loyaltyPoints = cleanData.customer.loyaltyPoints;
-        
         cleanData.customer = validCustomer;
       }
       
-      // Ensure items don't have productId or id
       if (cleanData.items && Array.isArray(cleanData.items)) {
         cleanData.items = cleanData.items.map(item => {
           const { productId, id, ...rest } = item;
-          return rest; // Return item without productId or id
+          return rest;
         });
       }
 
@@ -216,8 +218,13 @@ class API {
       });
 
       const response = await this.client.post('/transactions/sync', cleanData);
-      console.log('✅ Transaction synced:', response.data._id);
-      return { success: true, id: response.data._id, transaction: response.data };
+      console.log('✅ Transaction synced:', response.data.id);
+      return { 
+        success: true, 
+        id: response.data.id, 
+        transaction: response.data.transaction,
+        alreadyExists: response.data.alreadyExists || false
+      };
     } catch (error) {
       console.error('❌ Sync transaction error:', error.message);
       if (error.response) {
@@ -242,8 +249,23 @@ class API {
       const response = await this.client.get(`/transactions/${id}`);
       return { success: true, transaction: response.data };
     } catch (error) {
+      if (error.response?.status === 404) {
+        return { success: false, transaction: null, notFound: true };
+      }
       console.error('❌ Get transaction error:', error.message);
       return { success: false, error: error.message, transaction: null };
+    }
+  }
+
+  async updateTransaction(id, transactionData) {
+    try {
+      console.log(`📤 Updating transaction: ${id}`);
+      const response = await this.client.put(`/transactions/${id}`, transactionData);
+      console.log('✅ Transaction updated:', id);
+      return { success: true, transaction: response.data };
+    } catch (error) {
+      console.error('❌ Update transaction error:', error.message);
+      return { success: false, error: error.message };
     }
   }
 
@@ -299,7 +321,6 @@ class API {
     try {
       console.log('📤 Creating customer:', customerData.name);
       
-      // Create a clean copy without any local id fields
       const cleanData = {
         name: customerData.name,
         email: customerData.email || '',
@@ -309,7 +330,6 @@ class API {
         notes: customerData.notes || ''
       };
       
-      // Add optional fields if they exist
       if (customerData.address) {
         cleanData.address = customerData.address;
       }
@@ -322,7 +342,6 @@ class API {
         cleanData.lastVisit = customerData.lastVisit;
       }
       
-      // IMPORTANT: Do NOT include any id field
       delete cleanData.id;
       delete cleanData._id;
       
@@ -344,7 +363,6 @@ class API {
     try {
       console.log('📤 Updating customer:', id);
       
-      // Create a clean copy without any local id fields
       const cleanData = {
         name: customerData.name,
         email: customerData.email || '',
@@ -354,7 +372,6 @@ class API {
         notes: customerData.notes || ''
       };
       
-      // Add optional fields if they exist
       if (customerData.address) {
         cleanData.address = customerData.address;
       }
@@ -367,7 +384,6 @@ class API {
         cleanData.lastVisit = customerData.lastVisit;
       }
       
-      // IMPORTANT: Do NOT include any id field
       delete cleanData.id;
       delete cleanData._id;
       
@@ -411,7 +427,7 @@ class API {
     } catch (error) {
       if (error.response?.status === 404) {
         console.log('⚠️ Customer not found by ID');
-        return { success: false, error: 'Customer not found', customer: null };
+        return { success: false, error: 'Customer not found', customer: null, notFound: true };
       }
       console.error('❌ Get customer error:', error.message);
       return { success: false, error: error.message, customer: null };
@@ -429,14 +445,12 @@ class API {
     } catch (error) {
       if (error.response?.status === 404) {
         console.log('⚠️ No customer found with this email');
-        return { success: true, customer: null }; // No customer found, but not an error
+        return { success: true, customer: null, notFound: true };
       }
       console.error('❌ Get customer by email error:', error.message);
       return { success: false, error: error.message, customer: null };
     }
   }
-
-  // ==================== NEW: CUSTOMER SEARCH METHODS ====================
 
   async getCustomersByEmail(email) {
     try {
@@ -444,12 +458,12 @@ class API {
       const response = await this.client.get(`/customers/email/${encodeURIComponent(email)}`);
       return { 
         success: true, 
-        customers: [response.data] // API returns single customer or 404
+        customers: [response.data]
       };
     } catch (error) {
       if (error.response?.status === 404) {
         console.log('⚠️ No customers found with this email');
-        return { success: true, customers: [] }; // No customer found, but not an error
+        return { success: true, customers: [] };
       }
       console.error('❌ Get customers by email error:', error.message);
       return { success: false, error: error.message, customers: [] };
@@ -510,42 +524,8 @@ class API {
       console.log(`🌐 Backend connection: ${isConnected ? '✅' : '❌'}`);
       return isConnected;
     } catch (error) {
-      console.warn('🌐 Backend connection failed:', error.message);
+      console.error('🌐 Backend connection: ❌', error.message);
       return false;
-    }
-  }
-
-  // ==================== BULK OPERATIONS ====================
-
-  async bulkCreateProducts(products) {
-    try {
-      const results = [];
-      for (const product of products) {
-        const result = await this.createProduct(product);
-        results.push(result);
-      }
-      const succeeded = results.filter(r => r.success).length;
-      const failed = results.filter(r => !r.success).length;
-      return { success: true, results, summary: { succeeded, failed } };
-    } catch (error) {
-      console.error('❌ Bulk create error:', error.message);
-      return { success: false, error: error.message, results: [] };
-    }
-  }
-
-  async bulkCreateTransactions(transactions) {
-    try {
-      const results = [];
-      for (const transaction of transactions) {
-        const result = await this.createTransaction(transaction);
-        results.push(result);
-      }
-      const succeeded = results.filter(r => r.success).length;
-      const failed = results.filter(r => !r.success).length;
-      return { success: true, results, summary: { succeeded, failed } };
-    } catch (error) {
-      console.error('❌ Bulk create transactions error:', error.message);
-      return { success: false, error: error.message, results: [] };
     }
   }
 }

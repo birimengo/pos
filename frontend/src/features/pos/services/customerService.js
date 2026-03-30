@@ -1,4 +1,5 @@
-// src/features/pos/services/customerService.js (NEW FILE)
+// src/features/pos/services/customerService.js
+
 import { db } from './database';
 import { api } from './api';
 import { transactionService } from './transactionService';
@@ -26,38 +27,80 @@ class CustomerService {
     try {
       await db.ensureInitialized();
       
-      // Create clean customer object for local storage
+      const customerId = customerData.id ? String(customerData.id) : `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      const allCustomers = await db.getAll('customers');
+      
+      // Check for existing customer by email (case insensitive)
+      if (customerData.email) {
+        const existingByEmail = allCustomers.find(c => 
+          c.email && c.email.toLowerCase() === customerData.email.toLowerCase() && 
+          String(c.id) !== customerId
+        );
+        if (existingByEmail) {
+          console.log('⚠️ Customer with this email already exists:', existingByEmail.name);
+          return { 
+            success: true, 
+            customerId: existingByEmail.id, 
+            customer: existingByEmail, 
+            isExisting: true,
+            message: 'Customer with this email already exists'
+          };
+        }
+      }
+      
+      // Check for existing customer by phone
+      if (customerData.phone) {
+        const existingByPhone = allCustomers.find(c => 
+          c.phone && c.phone === customerData.phone && 
+          String(c.id) !== customerId
+        );
+        if (existingByPhone) {
+          console.log('⚠️ Customer with this phone already exists:', existingByPhone.name);
+          return { 
+            success: true, 
+            customerId: existingByPhone.id, 
+            customer: existingByPhone, 
+            isExisting: true,
+            message: 'Customer with this phone already exists'
+          };
+        }
+      }
+      
+      // Check if customer already exists by ID (update case)
+      let existingCustomer = null;
+      if (customerData.id) {
+        existingCustomer = allCustomers.find(c => String(c.id) === customerId);
+      }
+      
+      const now = new Date().toISOString();
       const customer = {
-        id: customerData.id || `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        _id: customerData._id, // Cloud ID if exists
+        id: customerId,
+        _id: customerData._id || existingCustomer?._id || null,
         name: customerData.name,
         email: customerData.email || '',
         phone: customerData.phone || '',
         address: customerData.address || '',
-        loyaltyPoints: customerData.loyaltyPoints || 0,
-        totalSpent: customerData.totalSpent || 0,
-        joinDate: customerData.joinDate || new Date().toISOString(),
-        lastVisit: customerData.lastVisit || new Date().toISOString(),
-        birthDate: customerData.birthDate,
-        notes: customerData.notes || '',
-        tags: customerData.tags || [],
-        
-        // Statistics (will be updated from transactions)
-        transactionCount: customerData.transactionCount || 0,
-        creditCount: customerData.creditCount || 0,
-        installmentCount: customerData.installmentCount || 0,
-        
-        // Sync tracking
-        synced: false,
+        loyaltyPoints: customerData.loyaltyPoints ?? existingCustomer?.loyaltyPoints ?? 0,
+        totalSpent: customerData.totalSpent ?? existingCustomer?.totalSpent ?? 0,
+        totalPaid: customerData.totalPaid ?? existingCustomer?.totalPaid ?? 0,
+        totalOutstanding: customerData.totalOutstanding ?? existingCustomer?.totalOutstanding ?? 0,
+        joinDate: customerData.joinDate || existingCustomer?.joinDate || now.split('T')[0],
+        lastVisit: customerData.lastVisit || now.split('T')[0],
+        birthDate: customerData.birthDate || existingCustomer?.birthDate || null,
+        notes: customerData.notes || existingCustomer?.notes || '',
+        tags: customerData.tags || existingCustomer?.tags || [],
+        transactionCount: customerData.transactionCount ?? existingCustomer?.transactionCount ?? 0,
+        creditCount: customerData.creditCount ?? existingCustomer?.creditCount ?? 0,
+        installmentCount: customerData.installmentCount ?? existingCustomer?.installmentCount ?? 0,
+        synced: existingCustomer?.synced ?? false,
         syncRequired: true,
-        cloudId: customerData._id,
-        
-        // Timestamps
-        createdAt: customerData.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        cloudId: customerData.cloudId || existingCustomer?.cloudId || customerData._id || null,
+        createdAt: existingCustomer?.createdAt || customerData.createdAt || now,
+        updatedAt: now
       };
 
-      // Handle empty email (remove to avoid unique index issues)
+      // Remove empty email to avoid index issues
       if (!customer.email) {
         delete customer.email;
       }
@@ -66,13 +109,23 @@ class CustomerService {
       console.log('✅ Customer saved locally:', {
         id: customer.id,
         name: customer.name,
-        email: customer.email || 'no-email'
+        email: customer.email || 'no-email',
+        isUpdate: !!existingCustomer
       });
 
-      // Add to sync queue
-      await this.addToSyncQueue(customer.id);
+      // Add to sync queue if it's a new customer or has changes
+      if (!existingCustomer || !customer.synced) {
+        await this.addToSyncQueue(customer.id);
+      }
 
-      return { success: true, customerId: customer.id, customer };
+      // Notify listeners about customer update
+      this.notifyListeners({
+        type: 'customer-saved',
+        customer: customer,
+        isExisting: !!existingCustomer
+      });
+
+      return { success: true, customerId: customer.id, customer, isExisting: !!existingCustomer };
     } catch (error) {
       console.error('❌ Failed to save customer locally:', error);
       return { success: false, error: error.message };
@@ -82,7 +135,7 @@ class CustomerService {
   async getCustomerLocally(customerId) {
     try {
       await db.ensureInitialized();
-      return await db.get('customers', customerId);
+      return await db.get('customers', String(customerId));
     } catch (error) {
       console.error('❌ Failed to get customer:', error);
       return null;
@@ -92,10 +145,139 @@ class CustomerService {
   async getAllCustomersLocally() {
     try {
       await db.ensureInitialized();
-      return await db.getAll('customers');
+      const customers = await db.getAll('customers');
+      return customers.map(c => ({ ...c, id: String(c.id) }));
     } catch (error) {
       console.error('❌ Failed to get customers:', error);
       return [];
+    }
+  }
+
+  async getCustomerByEmail(email) {
+    if (!email) return null;
+    try {
+      const customers = await this.getAllCustomersLocally();
+      return customers.find(c => c.email && c.email.toLowerCase() === email.toLowerCase()) || null;
+    } catch (error) {
+      console.error('❌ Failed to get customer by email:', error);
+      return null;
+    }
+  }
+
+  async getCustomerByPhone(phone) {
+    if (!phone) return null;
+    try {
+      const customers = await this.getAllCustomersLocally();
+      return customers.find(c => c.phone && c.phone === phone) || null;
+    } catch (error) {
+      console.error('❌ Failed to get customer by phone:', error);
+      return null;
+    }
+  }
+
+  // ==================== RECALCULATE CUSTOMER STATS ====================
+
+  async recalculateCustomerStats(customerId) {
+    try {
+      await db.ensureInitialized();
+      const customerIdStr = String(customerId);
+      
+      const customer = await db.get('customers', customerIdStr);
+      if (!customer) {
+        throw new Error(`Customer ${customerIdStr} not found`);
+      }
+
+      const transactions = await transactionService.getTransactionsByCustomer(customerIdStr);
+      
+      let totalSpent = 0;
+      let totalPaid = 0;
+      let totalOutstanding = 0;
+      let transactionCount = transactions.length;
+      let creditCount = 0;
+      let installmentCount = 0;
+      let lastVisit = customer.lastVisit;
+
+      for (const trans of transactions) {
+        totalSpent += trans.total || 0;
+        totalPaid += (trans.paid || 0);
+        totalOutstanding += (trans.remaining || 0);
+        
+        if (trans.isCredit) creditCount++;
+        if (trans.isInstallment) installmentCount++;
+        
+        if (trans.createdAt && (!lastVisit || new Date(trans.createdAt) > new Date(lastVisit))) {
+          lastVisit = trans.createdAt;
+        }
+      }
+
+      const needsUpdate = 
+        customer.totalSpent !== totalSpent ||
+        customer.totalPaid !== totalPaid ||
+        customer.totalOutstanding !== totalOutstanding ||
+        customer.transactionCount !== transactionCount ||
+        customer.creditCount !== creditCount ||
+        customer.installmentCount !== installmentCount;
+
+      if (needsUpdate) {
+        customer.totalSpent = totalSpent;
+        customer.totalPaid = totalPaid;
+        customer.totalOutstanding = totalOutstanding;
+        customer.transactionCount = transactionCount;
+        customer.creditCount = creditCount;
+        customer.installmentCount = installmentCount;
+        customer.lastVisit = lastVisit || customer.lastVisit;
+        customer.updatedAt = new Date().toISOString();
+        
+        await db.put('customers', customer);
+        console.log(`📊 Recalculated stats for ${customer.name}:`, {
+          totalSpent,
+          transactionCount,
+          creditCount,
+          installmentCount
+        });
+        
+        // Notify listeners about stats update
+        this.notifyListeners({
+          type: 'customer-stats-updated',
+          customerId: customer.id,
+          stats: { totalSpent, transactionCount, creditCount, installmentCount, lastVisit }
+        });
+      }
+
+      return { success: true, customer, stats: { totalSpent, transactionCount, creditCount, installmentCount, lastVisit } };
+    } catch (error) {
+      console.error('❌ Failed to recalculate customer stats:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async recalculateAllCustomersStats() {
+    try {
+      await db.ensureInitialized();
+      console.log('🔄 Recalculating all customer statistics...');
+      
+      const allCustomers = await db.getAll('customers');
+      let updatedCount = 0;
+
+      for (const customer of allCustomers) {
+        const result = await this.recalculateCustomerStats(customer.id);
+        if (result.success && result.stats) {
+          updatedCount++;
+        }
+      }
+
+      console.log(`✅ Recalculated stats for ${updatedCount} customers`);
+      
+      // Notify listeners about bulk update completion
+      this.notifyListeners({
+        type: 'all-customers-stats-updated',
+        updatedCount
+      });
+
+      return { success: true, updatedCount };
+    } catch (error) {
+      console.error('❌ Failed to recalculate all customer stats:', error);
+      return { success: false, error: error.message };
     }
   }
 
@@ -103,14 +285,10 @@ class CustomerService {
 
   async getCustomerWithTransactions(customerId) {
     try {
-      // Get customer data
-      const customer = await this.getCustomerLocally(customerId);
+      const customer = await this.getCustomerLocally(String(customerId));
       if (!customer) return null;
 
-      // Get all transactions for this customer
-      const transactions = await transactionService.getTransactionsByCustomer(customerId);
-
-      // Calculate customer statistics
+      const transactions = await transactionService.getTransactionsByCustomer(String(customerId));
       const stats = this.calculateCustomerStats(customer, transactions);
 
       return {
@@ -150,18 +328,15 @@ class CustomerService {
       const paid = t.paid || 0;
       const remaining = t.remaining || 0;
 
-      // Totals
       stats.totalSpent += amount;
       stats.totalPaid += paid;
       stats.totalOutstanding += remaining;
 
-      // Counts by type
       if (t.isCredit) stats.creditCount++;
       if (t.isInstallment) stats.installmentCount++;
       if (t.fullyPaid) stats.completedCount++;
       if (transactionService.isOverdue(t)) stats.overdueCount++;
 
-      // Track first and last transaction
       if (!stats.firstTransaction || new Date(t.createdAt) < new Date(stats.firstTransaction)) {
         stats.firstTransaction = t.createdAt;
       }
@@ -169,36 +344,27 @@ class CustomerService {
         stats.lastTransaction = t.createdAt;
       }
 
-      // Monthly spending
       const month = new Date(t.createdAt).toLocaleString('en-US', { month: 'short', year: 'numeric' });
       stats.monthlySpending[month] = (stats.monthlySpending[month] || 0) + amount;
 
-      // Product frequency
       t.items?.forEach(item => {
         const key = item.productId || item.id;
-        productCount[key] = productCount[key] || {
-          id: key,
-          name: item.name,
-          sku: item.sku,
-          count: 0,
-          total: 0
-        };
+        if (!productCount[key]) {
+          productCount[key] = {
+            id: key,
+            name: item.name,
+            sku: item.sku,
+            count: 0,
+            total: 0
+          };
+        }
         productCount[key].count += item.quantity;
         productCount[key].total += item.price * item.quantity;
       });
     });
 
-    // Averages
-    stats.averageTicket = stats.totalTransactions > 0 
-      ? stats.totalSpent / stats.totalTransactions 
-      : 0;
-
-    // Top products
-    stats.topProducts = Object.values(productCount)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-
-    // Format currency values
+    stats.averageTicket = stats.totalTransactions > 0 ? stats.totalSpent / stats.totalTransactions : 0;
+    stats.topProducts = Object.values(productCount).sort((a, b) => b.count - a.count).slice(0, 5);
     stats.formattedTotalSpent = transactionService.formatCurrency(stats.totalSpent);
     stats.formattedTotalPaid = transactionService.formatCurrency(stats.totalPaid);
     stats.formattedTotalOutstanding = transactionService.formatCurrency(stats.totalOutstanding);
@@ -213,8 +379,7 @@ class CustomerService {
     try {
       await db.ensureInitialized();
       
-      // Get customer from local storage
-      const customer = await db.get('customers', customerId);
+      const customer = await db.get('customers', String(customerId));
       if (!customer) {
         throw new Error(`Customer ${customerId} not found`);
       }
@@ -225,8 +390,6 @@ class CustomerService {
         email: customer.email || 'no-email'
       });
 
-      // ===== CLEAN CUSTOMER DATA FOR CLOUD =====
-      // Create a completely new object with ONLY MongoDB fields
       const customerData = {};
       
       if (customer.name) customerData.name = customer.name;
@@ -241,32 +404,25 @@ class CustomerService {
       if (customer.notes) customerData.notes = customer.notes;
       if (customer.tags) customerData.tags = customer.tags;
 
-      console.log('📤 Sending to cloud:', customerData);
-
-      // Check if customer exists in cloud
       let result;
       let existingCloudCustomer = null;
 
-      // Try by cloud ID first
       if (customer.cloudId || customer._id) {
         try {
           const checkResult = await api.getCustomer(customer.cloudId || customer._id);
           if (checkResult.success && checkResult.customer) {
             existingCloudCustomer = checkResult.customer;
-            console.log('✅ Found existing customer by ID:', existingCloudCustomer._id);
           }
         } catch (error) {
           console.log('⚠️ Customer not found by ID');
         }
       }
 
-      // If not found by ID and we have email, try by email
       if (!existingCloudCustomer && customer.email) {
         try {
           const emailResult = await api.getCustomersByEmail(customer.email);
           if (emailResult.success && emailResult.customers?.length > 0) {
             existingCloudCustomer = emailResult.customers[0];
-            console.log('✅ Found existing customer by email:', existingCloudCustomer._id);
           }
         } catch (error) {
           console.log('⚠️ No customer found with this email');
@@ -274,16 +430,9 @@ class CustomerService {
       }
 
       if (existingCloudCustomer) {
-        // UPDATE existing customer - merge data
-        console.log('🔄 Updating existing customer');
-        
-        // Merge loyalty points
         customerData.loyaltyPoints = (existingCloudCustomer.loyaltyPoints || 0) + (customer.loyaltyPoints || 0);
-        
-        // Merge total spent
         customerData.totalSpent = (existingCloudCustomer.totalSpent || 0) + (customer.totalSpent || 0);
         
-        // Use most recent last visit
         if (customer.lastVisit) {
           const newDate = new Date(customer.lastVisit);
           const existingDate = existingCloudCustomer.lastVisit ? new Date(existingCloudCustomer.lastVisit) : null;
@@ -294,26 +443,21 @@ class CustomerService {
         
         result = await api.updateCustomer(existingCloudCustomer._id, customerData);
       } else {
-        // CREATE new customer
-        console.log('➕ Creating new customer');
         result = await api.createCustomer(customerData);
       }
 
       if (result.success) {
-        // Get cloud ID from response
         const cloudId = result.customer?._id || result.customer?.id || result.id || result._id;
 
-        // Update local customer with cloud data
         const updatedCustomer = {
-          ...customer, // Keep all local fields including 'id'
-          _id: cloudId, // Store MongoDB _id
+          ...customer,
+          _id: cloudId,
           cloudId: cloudId,
           synced: true,
           syncRequired: false,
           lastSyncedAt: new Date().toISOString()
         };
 
-        // Ensure local ID is preserved
         if (!updatedCustomer.id) {
           updatedCustomer.id = customer.id;
         }
@@ -333,9 +477,8 @@ class CustomerService {
     } catch (error) {
       console.error('❌ Failed to sync customer to cloud:', error);
       
-      // Update customer with sync error
       try {
-        const customer = await db.get('customers', customerId);
+        const customer = await db.get('customers', String(customerId));
         if (customer) {
           customer.syncError = error.message;
           customer.lastSyncAttempt = new Date().toISOString();
@@ -352,20 +495,21 @@ class CustomerService {
   async addToSyncQueue(customerId) {
     try {
       await db.ensureInitialized();
+      const customerIdStr = String(customerId);
       
       const queue = await db.getAll('syncQueue');
       const exists = queue.some(item => 
-        item.customerId === customerId && item.type === 'customer'
+        String(item.customerId) === customerIdStr && item.type === 'customer'
       );
       
       if (!exists) {
         await db.addToSyncQueue({
           type: 'customer',
-          customerId,
+          customerId: customerIdStr,
           timestamp: new Date().toISOString(),
           retryCount: 0
         });
-        console.log(`📋 Customer ${customerId} added to sync queue`);
+        console.log(`📋 Customer ${customerIdStr} added to sync queue`);
       }
     } catch (error) {
       console.error('❌ Failed to add to sync queue:', error);
@@ -377,14 +521,16 @@ class CustomerService {
   async addLoyaltyPoints(customerId, points, amount, transactionDetails = {}) {
     try {
       await db.ensureInitialized();
+      const customerIdStr = String(customerId);
       
-      const customer = await db.get('customers', customerId);
+      const customer = await db.get('customers', customerIdStr);
       if (!customer) {
-        throw new Error('Customer not found');
+        throw new Error(`Customer ${customerIdStr} not found`);
       }
 
-      // Update customer
-      customer.loyaltyPoints = (customer.loyaltyPoints || 0) + points;
+      const oldPoints = customer.loyaltyPoints || 0;
+      
+      customer.loyaltyPoints = oldPoints + points;
       customer.totalSpent = (customer.totalSpent || 0) + amount;
       customer.lastVisit = new Date().toISOString();
       customer.transactionCount = (customer.transactionCount || 0) + 1;
@@ -406,6 +552,16 @@ class CustomerService {
       console.log('✅ Loyalty points added:', {
         customer: customer.name,
         points,
+        oldTotal: oldPoints,
+        newTotal: customer.loyaltyPoints
+      });
+
+      // Notify listeners about loyalty points update
+      this.notifyListeners({
+        type: 'loyalty-points-added',
+        customerId: customer.id,
+        customerName: customer.name,
+        pointsAdded: points,
         newTotal: customer.loyaltyPoints
       });
 
@@ -413,6 +569,93 @@ class CustomerService {
     } catch (error) {
       console.error('❌ Failed to add loyalty points:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  // ==================== UTILITY METHODS ====================
+
+  async getCustomerBalance(customerId) {
+    try {
+      const customer = await this.getCustomerLocally(String(customerId));
+      if (!customer) return null;
+
+      const transactions = await transactionService.getTransactionsByCustomer(String(customerId));
+      
+      const totalOutstanding = transactions
+        .filter(t => !t.fullyPaid && (t.isCredit || t.isInstallment))
+        .reduce((sum, t) => sum + (t.remaining || 0), 0);
+      
+      const totalPaid = transactions.reduce((sum, t) => sum + (t.paid || 0), 0);
+      const totalSpent = transactions.reduce((sum, t) => sum + (t.total || 0), 0);
+      const totalTransactions = transactions.length;
+      const creditCount = transactions.filter(t => t.isCredit).length;
+      const installmentCount = transactions.filter(t => t.isInstallment).length;
+
+      return {
+        customerId,
+        customerName: customer.name,
+        customerEmail: customer.email,
+        customerPhone: customer.phone,
+        totalSpent: transactionService.formatCurrency(totalSpent),
+        totalPaid: transactionService.formatCurrency(totalPaid),
+        totalOutstanding: transactionService.formatCurrency(totalOutstanding),
+        totalTransactions,
+        creditCount,
+        installmentCount,
+        overdueCount: transactions.filter(t => transactionService.isOverdue(t)).length,
+        lastTransaction: transactions.length > 0 ? transactions[0] : null,
+        loyaltyPoints: customer.loyaltyPoints || 0
+      };
+    } catch (error) {
+      console.error('❌ Failed to get customer balance:', error);
+      return null;
+    }
+  }
+
+  // ==================== BULK OPERATIONS ====================
+
+  async deleteAllCustomers() {
+    try {
+      await db.ensureInitialized();
+      const customers = await db.getAll('customers');
+      
+      for (const customer of customers) {
+        await db.delete('customers', customer.id);
+      }
+      
+      console.log(`🗑️ Deleted ${customers.length} customers`);
+      return { success: true, count: customers.length };
+    } catch (error) {
+      console.error('❌ Failed to delete customers:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getCustomerCount() {
+    try {
+      await db.ensureInitialized();
+      const customers = await db.getAll('customers');
+      return customers.length;
+    } catch (error) {
+      console.error('❌ Failed to get customer count:', error);
+      return 0;
+    }
+  }
+
+  async searchCustomers(query) {
+    try {
+      await db.ensureInitialized();
+      const allCustomers = await db.getAll('customers');
+      
+      const searchLower = query.toLowerCase();
+      return allCustomers.filter(c => 
+        c.name.toLowerCase().includes(searchLower) ||
+        (c.email && c.email.toLowerCase().includes(searchLower)) ||
+        (c.phone && c.phone.includes(query))
+      );
+    } catch (error) {
+      console.error('❌ Failed to search customers:', error);
+      return [];
     }
   }
 }

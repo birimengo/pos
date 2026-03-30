@@ -1,4 +1,5 @@
 // src/features/pos/checkout/Checkout.jsx
+
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useInventory } from '../context/InventoryContext';
@@ -22,6 +23,30 @@ const formatPrice = (price) => {
   } else {
     return rounded.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   }
+};
+
+// Helper function to find existing customer
+const findExistingCustomer = (customer, customersList) => {
+  if (!customer) return null;
+  
+  // Search by ID first
+  let existing = customersList.find(c => String(c.id) === String(customer.id));
+  
+  // If not found by ID and we have email, search by email
+  if (!existing && customer.email) {
+    existing = customersList.find(c => 
+      c.email && c.email.toLowerCase() === customer.email.toLowerCase()
+    );
+  }
+  
+  // If still not found and we have phone, search by phone
+  if (!existing && customer.phone) {
+    existing = customersList.find(c => 
+      c.phone && c.phone === customer.phone
+    );
+  }
+  
+  return existing;
 };
 
 export default function Checkout() {
@@ -319,38 +344,81 @@ export default function Checkout() {
     }
   };
 
-  // Customer selection
+  // Customer selection - UPDATED for returning customers
   const handleSelectCustomer = async (customer) => {
-    // Check if this is an existing customer
-    const isExistingCustomer = customerState.customers.some(c => c.id === customer.id);
+    // Normalize customer with string ID
+    const normalizedCustomer = {
+      ...customer,
+      id: String(customer.id || Date.now())
+    };
     
-    // Only validate email for NEW customers
-    if (!isExistingCustomer && customer.email) {
-      // Check if email already exists
-      const existingCustomerWithEmail = customerState.customers.find(c => 
-        c.email && c.email.toLowerCase() === customer.email.toLowerCase()
-      );
+    // First, check if customer already exists in context
+    let existingCustomer = findExistingCustomer(normalizedCustomer, customerState.customers);
+    
+    if (existingCustomer) {
+      // Use existing customer from context
+      console.log('✅ Using existing customer from context:', existingCustomer.name, 'ID:', existingCustomer.id);
+      cartDispatch({ type: 'SET_CUSTOMER', payload: existingCustomer });
+      setShowCustomerModal(false);
+      return;
+    }
+    
+    // Check if customer exists in database (for returning customers from cloud sync)
+    try {
+      const allCustomers = await customerService.getAllCustomersLocally();
+      existingCustomer = findExistingCustomer(normalizedCustomer, allCustomers);
       
-      if (existingCustomerWithEmail) {
-        alert(`Cannot create new customer: Email ${customer.email} is already registered to ${existingCustomerWithEmail.name}.`);
+      if (existingCustomer) {
+        // Found in database but not in context - add to context
+        console.log('✅ Found existing customer in database:', existingCustomer.name);
+        customerDispatch({ type: 'ADD_CUSTOMER', payload: existingCustomer });
+        cartDispatch({ type: 'SET_CUSTOMER', payload: existingCustomer });
+        setShowCustomerModal(false);
+        return;
+      }
+    } catch (error) {
+      console.error('Error checking database for customer:', error);
+    }
+    
+    // New customer - validate email/phone uniqueness
+    if (normalizedCustomer.email) {
+      const emailExists = customerState.customers.some(c => 
+        c.email && c.email.toLowerCase() === normalizedCustomer.email.toLowerCase()
+      );
+      if (emailExists) {
+        alert(`Customer with email "${normalizedCustomer.email}" already exists. Please search and select them.`);
         return;
       }
     }
     
-    // If new customer, save to database
-    if (!isExistingCustomer) {
-      try {
-        const result = await customerService.saveCustomerLocally(customer);
-        if (result.success) {
-          customer.id = result.customerId;
-          customerDispatch({ type: 'ADD_CUSTOMER', payload: customer });
-        }
-      } catch (error) {
-        console.error('Failed to save customer:', error);
+    if (normalizedCustomer.phone) {
+      const phoneExists = customerState.customers.some(c => 
+        c.phone && c.phone === normalizedCustomer.phone
+      );
+      if (phoneExists) {
+        alert(`Customer with phone "${normalizedCustomer.phone}" already exists. Please search and select them.`);
+        return;
       }
     }
     
-    cartDispatch({ type: 'SET_CUSTOMER', payload: customer });
+    // Save new customer to database
+    try {
+      const result = await customerService.saveCustomerLocally(normalizedCustomer);
+      if (result.success) {
+        const savedCustomer = result.customer;
+        customerDispatch({ type: 'ADD_CUSTOMER', payload: savedCustomer });
+        cartDispatch({ type: 'SET_CUSTOMER', payload: savedCustomer });
+        console.log('✅ New customer saved:', savedCustomer.name);
+      } else {
+        console.error('Failed to save customer:', result.error);
+        // Still set customer in cart even if save failed (will retry sync)
+        cartDispatch({ type: 'SET_CUSTOMER', payload: normalizedCustomer });
+      }
+    } catch (error) {
+      console.error('Error saving customer:', error);
+      cartDispatch({ type: 'SET_CUSTOMER', payload: normalizedCustomer });
+    }
+    
     setShowCustomerModal(false);
   };
 
@@ -400,9 +468,9 @@ export default function Checkout() {
   // Save transaction
   const saveTransaction = async (saleData) => {
     try {
-      // Prepare customer data
+      // Prepare customer data with string ID
       const customerForTransaction = saleData.customer ? {
-        id: saleData.customer.id,
+        id: String(saleData.customer.id),
         _id: saleData.customer._id,
         name: saleData.customer.name,
         email: saleData.customer.email || '',
@@ -414,7 +482,7 @@ export default function Checkout() {
       const transactionData = {
         receiptNumber: saleData.receiptNumber,
         items: saleData.items.map(item => ({
-          productId: item.id,
+          productId: String(item.id),
           _id: item._id,
           name: item.name,
           sku: item.sku,
@@ -471,10 +539,11 @@ export default function Checkout() {
   // Update customer loyalty
   const updateCustomerLoyalty = async (customerId, amount, isCredit = false, isInstallment = false) => {
     const pointsEarned = Math.floor(amount / 10); // 1 point per $10
+    const customerIdStr = String(customerId);
     
     try {
       const result = await customerService.addLoyaltyPoints(
-        customerId,
+        customerIdStr,
         pointsEarned,
         amount,
         { isCredit, isInstallment }
@@ -485,7 +554,7 @@ export default function Checkout() {
         customerDispatch({
           type: 'ADD_LOYALTY_POINTS',
           payload: {
-            customerId,
+            customerId: customerIdStr,
             points: pointsEarned,
             amount,
             isCredit,
@@ -493,7 +562,7 @@ export default function Checkout() {
           }
         });
         
-        console.log(`✅ Loyalty points added: +${pointsEarned} for customer ${customerId}`);
+        console.log(`✅ Loyalty points added: +${pointsEarned} for customer ${customerIdStr}`);
       }
     } catch (error) {
       console.error('❌ Failed to update loyalty:', error);

@@ -4,6 +4,8 @@ declare interface validCustomerType {
 
 	getTransaction(id: any): Promise<{	}>;
 
+	updateTransaction(id: any, transactionData: any): Promise<{	}>;
+
 	getTransactionsByDateRange(startDate: any, endDate: any): Promise<{	}>;
 
 	getTransactionsByCustomer(customerId: any): Promise<{	}>;
@@ -33,8 +35,4 @@ declare interface validCustomerType {
 	syncAll(data: any): Promise<{	}>;
 
 	checkConnection(): Promise<any>;
-
-	bulkCreateProducts(products: any): Promise<{	}>;
-
-	bulkCreateTransactions(transactions: any): Promise<{	}>;
 }

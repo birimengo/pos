@@ -1,4 +1,7 @@
+// backend/controllers/customerController.js
+
 import Customer from '../models/Customer.js';
+import Transaction from '../models/Transaction.js';
 
 // Get all customers
 export const getAllCustomers = async (req, res, next) => {
@@ -6,7 +9,7 @@ export const getAllCustomers = async (req, res, next) => {
     const customers = await Customer.find().sort({ createdAt: -1 });
     res.json(customers);
   } catch (error) {
-    next(error); // Pass to error handler
+    next(error);
   }
 };
 
@@ -63,6 +66,28 @@ export const getCustomerByEmail = async (req, res, next) => {
     }
     res.json(customer);
   } catch (error) {
+    next(error);
+  }
+};
+
+// ===== NEW: Get all transactions for a specific customer =====
+export const getCustomerTransactions = async (req, res, next) => {
+  try {
+    const customerId = req.params.id;
+    console.log(`🔍 Fetching transactions for customer ID: ${customerId}`);
+    
+    // Find transactions where customer.id matches or customer._id matches
+    const transactions = await Transaction.find({
+      $or: [
+        { 'customer.id': customerId },
+        { 'customer._id': customerId }
+      ]
+    }).sort({ createdAt: -1 });
+    
+    console.log(`✅ Found ${transactions.length} transactions for customer ${customerId}`);
+    res.json(transactions);
+  } catch (error) {
+    console.error('❌ Get customer transactions error:', error);
     next(error);
   }
 };

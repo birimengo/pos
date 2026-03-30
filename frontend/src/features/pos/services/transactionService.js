@@ -1,4 +1,5 @@
 // src/features/pos/services/transactionService.js
+
 import { db } from './database';
 import { api } from './api';
 import { cloudSync } from './cloudSyncService';
@@ -27,20 +28,18 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      // Format customer data properly for local storage - keep all fields including ID
       const customerData = transactionData.customer ? {
-        id: transactionData.customer.id || transactionData.customer._id, // Local ID
-        _id: transactionData.customer._id, // Cloud ID if exists
+        id: String(transactionData.customer.id || transactionData.customer._id),
+        _id: transactionData.customer._id,
         name: transactionData.customer.name,
         email: transactionData.customer.email || '',
         phone: transactionData.customer.phone || '',
         loyaltyPoints: transactionData.customer.loyaltyPoints || 0
       } : null;
 
-      // Format items for local storage - keep product references
       const items = transactionData.items.map(item => ({
-        productId: item.productId || item.id, // Local product reference
-        _id: item._id, // Cloud product ID if exists
+        productId: String(item.productId || item.id),
+        _id: item._id,
         name: item.name,
         sku: item.sku,
         price: item.price,
@@ -48,7 +47,6 @@ class TransactionService {
         total: item.price * item.quantity
       }));
 
-      // Calculate initial payment info
       const total = transactionData.total;
       const initialPayment = transactionData.initialPayment || transactionData.paid || total;
       const remaining = transactionData.isCredit || transactionData.isInstallment 
@@ -56,14 +54,11 @@ class TransactionService {
         : 0;
 
       const transaction = {
-        // Core fields
-        id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Local ID
-        _id: transactionData._id, // Cloud ID if exists
+        id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        _id: transactionData._id,
         receiptNumber: transactionData.receiptNumber,
         customer: customerData,
         items: items,
-        
-        // Financial fields
         subtotal: transactionData.subtotal,
         discount: transactionData.discount || 0,
         tax: transactionData.tax || 0,
@@ -72,8 +67,6 @@ class TransactionService {
         change: transactionData.change || 0,
         notes: transactionData.notes || '',
         status: 'completed',
-        
-        // Payment tracking fields
         remaining: remaining,
         paid: initialPayment,
         dueDate: transactionData.dueDate || null,
@@ -82,8 +75,6 @@ class TransactionService {
         isCredit: transactionData.isCredit || false,
         fullyPaid: remaining <= 0,
         creditSettled: remaining <= 0,
-        
-        // Payment history
         paymentHistory: [{
           id: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           amount: initialPayment,
@@ -92,15 +83,11 @@ class TransactionService {
           remaining: remaining,
           notes: 'Initial payment'
         }],
-        
-        // Sync tracking
         synced: false,
         syncRequired: true,
-        cloudId: transactionData._id, // Store cloud ID if exists
+        cloudId: transactionData._id,
         syncError: null,
         lastSyncAttempt: null,
-        
-        // Timestamps
         createdAt: transactionData.timestamp || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         lastPaymentDate: transactionData.isCredit || transactionData.isInstallment ? new Date().toISOString() : null
@@ -118,7 +105,6 @@ class TransactionService {
         isInstallment: transaction.isInstallment
       });
 
-      // Add to sync queue
       await this.addToSyncQueue(transaction.id);
 
       return { success: true, transactionId: transaction.id, transaction };
@@ -131,10 +117,9 @@ class TransactionService {
   async getTransactionLocally(transactionId) {
     try {
       await db.ensureInitialized();
-      const transaction = await db.get('transactions', transactionId);
+      const transaction = await db.get('transactions', String(transactionId));
       
       if (transaction) {
-        // Enhance with calculated fields
         transaction.paymentProgress = ((transaction.paid || 0) / transaction.total) * 100;
         transaction.isOverdue = this.isOverdue(transaction);
         transaction.formattedDate = this.formatDate(transaction.createdAt);
@@ -142,7 +127,6 @@ class TransactionService {
         transaction.formattedRemaining = this.formatCurrency(transaction.remaining);
         transaction.formattedPaid = this.formatCurrency(transaction.paid || 0);
         
-        // Sort payment history by date (newest first)
         if (transaction.paymentHistory) {
           transaction.paymentHistory.sort((a, b) => new Date(b.date) - new Date(a.date));
         }
@@ -160,7 +144,6 @@ class TransactionService {
       await db.ensureInitialized();
       const transactions = await db.getAll('transactions');
       
-      // Enhance each transaction with calculated fields
       return transactions.map(t => ({
         ...t,
         paymentProgress: ((t.paid || 0) / t.total) * 100,
@@ -200,13 +183,12 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       const all = await db.getAll('transactions');
+      const customerIdStr = String(customerId);
       
-      // Find transactions where customer.id matches OR customer._id matches
       const transactions = all.filter(t => 
-        t.customer?.id === customerId || t.customer?._id === customerId
+        String(t.customer?.id) === customerIdStr || String(t.customer?._id) === customerIdStr
       );
       
-      // Sort by date (newest first) and enhance with calculated fields
       return transactions.sort((a, b) => 
         new Date(b.createdAt) - new Date(a.createdAt)
       ).map(t => ({
@@ -229,7 +211,6 @@ class TransactionService {
       await db.ensureInitialized();
       const all = await db.getAll('transactions');
       
-      // Get all unpaid credit/installment transactions
       return all.filter(t => 
         (t.isInstallment || t.isCredit) && 
         !t.fullyPaid && 
@@ -242,7 +223,6 @@ class TransactionService {
         formattedTotal: this.formatCurrency(t.total),
         formattedPaid: this.formatCurrency(t.paid || 0)
       })).sort((a, b) => {
-        // Sort by overdue first, then by due date
         if (a.isOverdue && !b.isOverdue) return -1;
         if (!a.isOverdue && b.isOverdue) return 1;
         return new Date(a.dueDate || a.createdAt) - new Date(b.dueDate || b.createdAt);
@@ -282,22 +262,22 @@ class TransactionService {
   async addToSyncQueue(transactionId) {
     try {
       await db.ensureInitialized();
+      const transactionIdStr = String(transactionId);
       
-      // Check if already in queue
       const queue = await db.getAll('syncQueue');
       const exists = queue.some(item => 
-        item.transactionId === transactionId && item.type === 'transaction'
+        String(item.transactionId) === transactionIdStr && item.type === 'transaction'
       );
       
       if (!exists) {
         await db.addToSyncQueue({
           type: 'transaction',
-          transactionId,
+          transactionId: transactionIdStr,
           timestamp: new Date().toISOString(),
           retryCount: 0,
           lastAttempt: null
         });
-        console.log(`📋 Transaction ${transactionId} added to sync queue`);
+        console.log(`📋 Transaction ${transactionIdStr} added to sync queue`);
       }
     } catch (error) {
       console.error('❌ Failed to add to sync queue:', error);
@@ -307,12 +287,13 @@ class TransactionService {
   async removeFromSyncQueue(transactionId) {
     try {
       await db.ensureInitialized();
+      const transactionIdStr = String(transactionId);
       const queue = await db.getAll('syncQueue');
-      const queueItem = queue.find(q => q.transactionId === transactionId && q.type === 'transaction');
+      const queueItem = queue.find(q => String(q.transactionId) === transactionIdStr && q.type === 'transaction');
       
-      if (queueItem) {
+      if (queueItem && queueItem.id) {
         await db.delete('syncQueue', queueItem.id);
-        console.log(`📋 Transaction ${transactionId} removed from sync queue`);
+        console.log(`📋 Transaction ${transactionIdStr} removed from sync queue`);
       }
     } catch (error) {
       console.error('❌ Failed to remove from sync queue:', error);
@@ -325,8 +306,7 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      // Get transaction from local storage
-      const transaction = await db.get('transactions', transactionId);
+      const transaction = await db.get('transactions', String(transactionId));
       if (!transaction) {
         throw new Error(`Transaction ${transactionId} not found`);
       }
@@ -340,8 +320,63 @@ class TransactionService {
         remaining: transaction.remaining
       });
 
-      // ===== CLEAN CUSTOMER DATA FOR CLOUD =====
-      // Remove local IDs to avoid MongoDB casting errors
+      // ===== FIRST: CHECK IF TRANSACTION ALREADY EXISTS IN CLOUD =====
+      let existingCloudTransaction = null;
+      
+      // Check by receipt number (most reliable)
+      try {
+        console.log('🔍 Checking for existing transaction by receipt number:', transaction.receiptNumber);
+        const checkResult = await api.getTransactionByReceipt(transaction.receiptNumber);
+        if (checkResult.success && checkResult.transaction) {
+          existingCloudTransaction = checkResult.transaction;
+          console.log('✅ Found existing transaction by receipt number:', existingCloudTransaction._id);
+        }
+      } catch (error) {
+        console.log('⚠️ No transaction found with receipt number:', transaction.receiptNumber);
+      }
+      
+      // If not found by receipt number and we have a cloud ID, try by ID
+      if (!existingCloudTransaction && (transaction.cloudId || transaction._id)) {
+        try {
+          const cloudId = transaction.cloudId || transaction._id;
+          console.log('🔍 Checking for existing transaction by ID:', cloudId);
+          const checkResult = await api.getTransaction(cloudId);
+          if (checkResult.success && checkResult.transaction) {
+            existingCloudTransaction = checkResult.transaction;
+            console.log('✅ Found existing transaction by ID:', existingCloudTransaction._id);
+          }
+        } catch (error) {
+          console.log('⚠️ No transaction found with ID');
+        }
+      }
+
+      // If transaction already exists in cloud, just mark as synced
+      if (existingCloudTransaction) {
+        console.log('✅ Transaction already exists in cloud, marking as synced');
+        
+        const updatedTransaction = {
+          ...transaction,
+          _id: existingCloudTransaction._id,
+          cloudId: existingCloudTransaction._id,
+          synced: true,
+          syncRequired: false,
+          syncError: null,
+          lastSyncedAt: new Date().toISOString()
+        };
+
+        await db.put('transactions', updatedTransaction);
+        await this.removeFromSyncQueue(transaction.id);
+
+        console.log('✅ Transaction marked as synced (already existed):', {
+          localId: transaction.id,
+          cloudId: existingCloudTransaction._id,
+          receiptNumber: transaction.receiptNumber
+        });
+
+        return { success: true, transaction: updatedTransaction, alreadyExists: true };
+      }
+
+      // ===== PREPARE TRANSACTION DATA FOR CLOUD =====
       const customerData = transaction.customer ? {
         name: transaction.customer.name,
         email: transaction.customer.email || '',
@@ -349,8 +384,6 @@ class TransactionService {
         loyaltyPoints: transaction.customer.loyaltyPoints || 0
       } : null;
 
-      // ===== CLEAN ITEMS FOR CLOUD =====
-      // IMPORTANT: Do NOT include productId to avoid ObjectId casting errors
       const items = transaction.items.map(item => ({
         name: item.name,
         sku: item.sku,
@@ -359,7 +392,6 @@ class TransactionService {
         total: item.price * item.quantity
       }));
 
-      // ===== PREPARE TRANSACTION DATA FOR CLOUD =====
       const transactionData = {
         receiptNumber: transaction.receiptNumber,
         items: items,
@@ -372,7 +404,6 @@ class TransactionService {
         createdAt: transaction.createdAt || new Date().toISOString()
       };
 
-      // Add payment tracking fields if applicable
       if (transaction.isCredit || transaction.isInstallment) {
         transactionData.isCredit = transaction.isCredit;
         transactionData.isInstallment = transaction.isInstallment;
@@ -382,12 +413,10 @@ class TransactionService {
         transactionData.fullyPaid = transaction.fullyPaid;
       }
 
-      // Add customer if exists
       if (customerData && Object.keys(customerData).length > 0) {
         transactionData.customer = customerData;
       }
 
-      // Add optional fields if they exist in the transaction
       if (transaction.tax) transactionData.tax = transaction.tax;
       if (transaction.notes) transactionData.notes = transaction.notes;
 
@@ -404,7 +433,6 @@ class TransactionService {
       const cloudId = transaction.cloudId || transaction._id;
       
       if (cloudId) {
-        // Try to update existing cloud transaction
         try {
           console.log('🔄 Attempting to update existing cloud transaction:', cloudId);
           result = await api.updateTransaction(cloudId, transactionData);
@@ -413,40 +441,33 @@ class TransactionService {
           result = await api.createTransaction(transactionData);
         }
       } else {
-        // Create new cloud transaction
         console.log('➕ Creating new cloud transaction');
         result = await api.createTransaction(transactionData);
       }
 
       if (result.success) {
-        // Get cloud ID from response
-        const cloudId = result.transaction?._id || result.transaction?.id || result.id || result._id;
+        const newCloudId = result.transaction?._id || result.transaction?.id || result.id || result._id;
 
-        // ===== UPDATE LOCAL TRANSACTION WITH CLOUD DATA =====
         const updatedTransaction = {
-          ...transaction, // Keep all local fields
-          _id: cloudId, // Store MongoDB _id
-          cloudId: cloudId,
+          ...transaction,
+          _id: newCloudId,
+          cloudId: newCloudId,
           synced: true,
           syncRequired: false,
           syncError: null,
           lastSyncedAt: new Date().toISOString()
         };
 
-        // Ensure local ID is preserved
         if (!updatedTransaction.id) {
           updatedTransaction.id = transaction.id;
         }
 
-        // Save updated transaction locally
         await db.put('transactions', updatedTransaction);
-        
-        // Remove from sync queue
         await this.removeFromSyncQueue(transaction.id);
 
         console.log('✅ Transaction synced to cloud:', {
           localId: transaction.id,
-          cloudId: cloudId,
+          cloudId: newCloudId,
           receiptNumber: transaction.receiptNumber
         });
 
@@ -457,9 +478,8 @@ class TransactionService {
     } catch (error) {
       console.error('❌ Failed to sync transaction to cloud:', error);
       
-      // Update transaction with sync error
       try {
-        const transaction = await db.get('transactions', transactionId);
+        const transaction = await db.get('transactions', String(transactionId));
         if (transaction) {
           transaction.syncError = error.message;
           transaction.lastSyncAttempt = new Date().toISOString();
@@ -487,19 +507,15 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      // Get all unsynced transactions
       const allTransactions = await db.getAll('transactions');
       const unsyncedTransactions = allTransactions.filter(t => !t.synced && t.syncRequired);
-      
-      // Also check sync queue
       const queue = await db.getAll('syncQueue');
       const queueTransactionIds = queue
         .filter(item => item.type === 'transaction')
-        .map(item => item.transactionId);
+        .map(item => String(item.transactionId));
       
-      // Combine both sources, remove duplicates
       const transactionIds = [...new Set([
-        ...unsyncedTransactions.map(t => t.id),
+        ...unsyncedTransactions.map(t => String(t.id)),
         ...queueTransactionIds
       ])];
 
@@ -518,8 +534,6 @@ class TransactionService {
           const result = await this.syncTransactionToCloud(id);
           if (result.success) successCount++;
           results.push({ id, ...result });
-          
-          // Small delay between syncs to avoid overwhelming the server
           await new Promise(resolve => setTimeout(resolve, 300));
         } catch (error) {
           console.error(`Failed to sync transaction ${id}:`, error);
@@ -548,18 +562,15 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      // Get transaction from local storage
-      const transaction = await db.get('transactions', transactionId);
+      const transaction = await db.get('transactions', String(transactionId));
       if (!transaction) {
         throw new Error('Transaction not found');
       }
 
-      // Check if transaction is already fully paid
       if (transaction.fullyPaid) {
         throw new Error('Transaction already fully paid');
       }
 
-      // Validate payment amount
       if (paymentAmount <= 0) {
         throw new Error('Payment amount must be greater than 0');
       }
@@ -569,11 +580,9 @@ class TransactionService {
         throw new Error(`Payment amount cannot exceed remaining balance of ${this.formatCurrency(currentRemaining)}`);
       }
 
-      // Calculate new balances
       const newRemaining = currentRemaining - paymentAmount;
       const newPaid = (transaction.paid || 0) + paymentAmount;
       
-      // Create payment record
       const paymentRecord = {
         id: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         amount: paymentAmount,
@@ -583,7 +592,6 @@ class TransactionService {
         notes: notes || `Payment of ${this.formatCurrency(paymentAmount)}`
       };
 
-      // Update transaction
       transaction.remaining = newRemaining;
       transaction.paid = newPaid;
       transaction.paymentHistory = transaction.paymentHistory || [];
@@ -591,25 +599,20 @@ class TransactionService {
       transaction.lastPaymentDate = new Date().toISOString();
       transaction.updatedAt = new Date().toISOString();
       transaction.syncRequired = true;
-      transaction.synced = false; // Mark as unsynced
+      transaction.synced = false;
 
-      // Check if fully paid
       if (newRemaining <= 0) {
         transaction.fullyPaid = true;
         transaction.fullyPaidAt = new Date().toISOString();
         transaction.status = 'completed';
         
-        // If it was credit/installment, mark as completed but keep history
         if (transaction.isCredit || transaction.isInstallment) {
           transaction.creditSettled = true;
           transaction.settledAt = new Date().toISOString();
         }
       }
 
-      // Save to local storage
       await db.put('transactions', transaction);
-      
-      // Add to sync queue
       await this.addToSyncQueue(transaction.id);
 
       console.log('✅ Payment recorded locally:', {
@@ -620,7 +623,6 @@ class TransactionService {
         fullyPaid: newRemaining <= 0
       });
 
-      // If online, try to sync immediately
       if (navigator.onLine) {
         setTimeout(() => {
           this.syncTransactionToCloud(transaction.id).catch(err => 
@@ -645,7 +647,7 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      const transaction = await db.get('transactions', transactionId);
+      const transaction = await db.get('transactions', String(transactionId));
       if (!transaction) {
         throw new Error('Transaction not found');
       }
@@ -674,7 +676,7 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      const transaction = await db.get('transactions', transactionId);
+      const transaction = await db.get('transactions', String(transactionId));
       if (!transaction) {
         throw new Error('Transaction not found');
       }
@@ -704,7 +706,6 @@ class TransactionService {
         formattedDueDate: transaction.dueDate ? this.formatDate(transaction.dueDate) : null
       };
 
-      // Sort payment history by date
       schedule.paymentHistory.sort((a, b) => new Date(b.date) - new Date(a.date));
 
       return schedule;
@@ -736,7 +737,6 @@ class TransactionService {
       const pendingTotal = pending.reduce((sum, t) => sum + (t.remaining || 0), 0);
       const collectedTotal = pending.reduce((sum, t) => sum + (t.paid || 0), 0);
 
-      // Breakdown by payment method
       const paymentMethods = {};
       completed.forEach(t => {
         const method = t.paymentMethod || 'Cash';
@@ -781,7 +781,6 @@ class TransactionService {
       const completed = transactions.filter(t => !t.isInstallment && !t.isCredit || t.fullyPaid);
       const total = completed.reduce((sum, t) => sum + t.total, 0);
 
-      // Group by day
       const dailyBreakdown = {};
       transactions.forEach(t => {
         const day = new Date(t.createdAt).getDate();
@@ -911,10 +910,9 @@ class TransactionService {
     const lastPayment = transaction.paymentHistory?.slice(-1)[0];
     if (!lastPayment) return transaction.dueDate;
     
-    // If it's an installment plan with regular payments
     if (transaction.installmentPlan) {
       const nextDate = new Date(lastPayment.date);
-      nextDate.setMonth(nextDate.getMonth() + 1); // Monthly payments
+      nextDate.setMonth(nextDate.getMonth() + 1);
       return nextDate.toISOString();
     }
     
@@ -996,13 +994,8 @@ class TransactionService {
     try {
       await db.ensureInitialized();
       
-      // Get transaction before deleting
-      const transaction = await db.get('transactions', transactionId);
-      
-      // Delete from local storage
-      await db.delete('transactions', transactionId);
-      
-      // Remove from sync queue if present
+      const transaction = await db.get('transactions', String(transactionId));
+      await db.delete('transactions', String(transactionId));
       await this.removeFromSyncQueue(transactionId);
       
       console.log('🗑️ Transaction deleted:', {

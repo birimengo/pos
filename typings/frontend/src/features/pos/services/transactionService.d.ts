@@ -2,27 +2,27 @@
 declare interface transactionType {
 	getTransactionLocally(transactionId: any): Promise<any>;
 
-	getAllTransactionsLocally(): Promise<any>;
+	getAllTransactionsLocally(): Promise<null | any[]>;
 
-	getTransactionsByDateRange(startDate: any, endDate: any): Promise<any>;
+	getTransactionsByDateRange(startDate: any, endDate: any): Promise<null | Date | any[]>;
 
-	getTransactionsByCustomer(customerId: any): Promise<any>;
+	getTransactionsByCustomer(customerId: any): Promise<null | any[]>;
 
-	getPendingPayments(): Promise<any>;
+	getPendingPayments(): Promise<null | number | Date | any[]>;
 
-	getOverduePayments(): Promise<any>;
+	getOverduePayments(): Promise<null | boolean | Date | any[]>;
 
-	addToSyncQueue(transactionId: any): Promise<any>;
+	addToSyncQueue(transactionId: any): Promise<void>;
 
-	removeFromSyncQueue(transactionId: any): Promise<any>;
+	removeFromSyncQueue(transactionId: any): Promise<void>;
 
-	syncTransactionToCloud(transactionId: any): Promise<any>;
+	syncTransactionToCloud(transactionId: any): Promise<{	}>;
 
-	syncAllPending(): Promise<any>;
+	syncAllPending(): Promise<{	}>;
 
-	recordPayment(transactionId: any, paymentAmount: any, paymentMethod: any, Cash: any, notes: any): Promise<any>;
+	recordPayment(transactionId: any, paymentAmount: any, paymentMethod: any, Cash: any, notes: any): Promise<null | {	}>;
 
-	extendDueDate(transactionId: any, newDueDate: any): Promise<any>;
+	extendDueDate(transactionId: any, newDueDate: any): Promise<{	}>;
 
 	getPaymentSchedule(transactionId: any): Promise<any>;
 
@@ -30,25 +30,25 @@ declare interface transactionType {
 
 	getMonthlySales(year: any, month: any): Promise<any>;
 
-	getTopProducts(limit: number): Promise<any>;
+	getTopProducts(limit: number): Promise<null | any[]>;
 
-	getPaymentMethodsBreakdown(startDate: any, endDate: any): Promise<any>;
+	getPaymentMethodsBreakdown(startDate: any, endDate: any): Promise<null | any[]>;
 
-	isOverdue(transaction: any): any;
+	isOverdue(transaction: any): boolean | Date;
 
 	getDaysOverdue(transaction: any): any;
 
 	calculateNextPaymentDue(transaction: any): any;
 
-	formatCurrency(amount: any): any;
+	formatCurrency(amount: any): null;
 
-	formatDate(dateString: any): any;
+	formatDate(dateString: any): string | null;
 
-	formatShortDate(dateString: any): any;
+	formatShortDate(dateString: any): string | null;
 
-	getSyncStatus(): Promise<any>;
+	getSyncStatus(): Promise<null>;
 
-	deleteTransaction(transactionId: any): Promise<any>;
+	deleteTransaction(transactionId: any): Promise<{	}>;
 
 	getCustomerBalance(customerId: any): Promise<any>;
 }

@@ -1,4 +1,5 @@
 // src/features/pos/services/customerTransactionService.js
+
 import { db } from './database';
 import { transactionService } from './transactionService';
 
@@ -26,23 +27,37 @@ class CustomerTransactionService {
       
       // Get all transactions
       const allTransactions = await db.getAll('transactions') || [];
+      const customerIdStr = String(customerId);
       
-      // Filter for this customer
-      const customerTransactions = allTransactions.filter(t => 
-        t.customer?.id === customerId || t.customer?._id === customerId
-      );
+      // Get customer to find their cloud ID for better matching
+      const customer = await db.get('customers', customerIdStr);
+      const customerCloudId = customer?._id || customer?.cloudId;
+      const customerEmail = customer?.email;
+      
+      // Filter for this customer - check multiple fields
+      const customerTransactions = allTransactions.filter(t => {
+        // Check by local customer id
+        if (t.customer?.id && String(t.customer.id) === customerIdStr) return true;
+        
+        // Check by cloud _id
+        if (customerCloudId && t.customer?._id && String(t.customer._id) === String(customerCloudId)) return true;
+        
+        // Check by email
+        if (customerEmail && t.customer?.email && t.customer.email === customerEmail) return true;
+        
+        return false;
+      });
 
       // Get all products for reference
       const allProducts = await db.getAll('products') || [];
-      const productMap = new Map(allProducts.map(p => [p.id, p]));
+      const productMap = new Map(allProducts.map(p => [String(p.id), p]));
 
       // Enhance transactions with product details
       const enhancedTransactions = await Promise.all(
         customerTransactions.map(async (transaction) => {
-          // Enhance items with current product data
           const enhancedItems = await Promise.all(
             (transaction.items || []).map(async (item) => {
-              const product = productMap.get(item.productId) || 
+              const product = productMap.get(String(item.productId)) || 
                              await this.getProductDetails(item.productId);
               
               return {
@@ -54,10 +69,7 @@ class CustomerTransactionService {
             })
           );
 
-          // Calculate payment status
           const paymentStatus = this.calculatePaymentStatus(transaction);
-          
-          // Get payment history
           const paymentHistory = transaction.paymentHistory || [];
 
           return {
@@ -87,7 +99,8 @@ class CustomerTransactionService {
   // Get product details
   async getProductDetails(productId) {
     try {
-      return await db.get('products', productId);
+      if (!productId) return null;
+      return await db.get('products', String(productId));
     } catch {
       return null;
     }
@@ -127,6 +140,7 @@ class CustomerTransactionService {
 
   // Get days since transaction
   getDaysSince(dateString) {
+    if (!dateString) return 0;
     const date = new Date(dateString);
     const now = new Date();
     const diffTime = Math.abs(now - date);
@@ -156,13 +170,44 @@ class CustomerTransactionService {
     }).format(amount || 0);
   }
 
-  // Get customer summary statistics
+  // Get customer summary statistics - FIXED with better matching
   async getCustomerSummary(customerId) {
     try {
-      const transactions = await this.getCustomerTransactionsWithDetails(customerId);
+      await db.ensureInitialized();
+      
+      const customerIdStr = String(customerId);
+      
+      // Get customer to find their cloud ID and email
+      const customer = await db.get('customers', customerIdStr);
+      if (!customer) {
+        console.log(`⚠️ Customer not found: ${customerIdStr}`);
+        return null;
+      }
+      
+      const customerCloudId = customer._id || customer.cloudId;
+      const customerEmail = customer.email;
+      
+      // Get all transactions
+      const allTransactions = await db.getAll('transactions') || [];
+      
+      // Filter transactions for this customer using multiple matching strategies
+      const customerTransactions = allTransactions.filter(t => {
+        // Check by local customer id
+        if (t.customer?.id && String(t.customer.id) === customerIdStr) return true;
+        
+        // Check by cloud _id
+        if (customerCloudId && t.customer?._id && String(t.customer._id) === String(customerCloudId)) return true;
+        
+        // Check by email
+        if (customerEmail && t.customer?.email && t.customer.email === customerEmail) return true;
+        
+        return false;
+      });
+      
+      console.log(`📊 Found ${customerTransactions.length} transactions for customer ${customer.name} (ID: ${customerIdStr}, CloudID: ${customerCloudId})`);
       
       const summary = {
-        totalTransactions: transactions.length,
+        totalTransactions: customerTransactions.length,
         totalSpent: 0,
         totalPaid: 0,
         totalOutstanding: 0,
@@ -182,15 +227,15 @@ class CustomerTransactionService {
 
       const productCount = {};
 
-      transactions.forEach(t => {
-        const status = this.calculatePaymentStatus(t);
+      customerTransactions.forEach(t => {
         const amount = t.total || 0;
         const paid = (t.total || 0) - (t.remaining || 0);
+        const remaining = t.remaining || 0;
         
         // Totals
         summary.totalSpent += amount;
         summary.totalPaid += paid;
-        summary.totalOutstanding += (t.remaining || 0);
+        summary.totalOutstanding += remaining;
         
         // Counts by type
         if (t.isCredit) {
@@ -201,10 +246,10 @@ class CustomerTransactionService {
           summary.totalInstallment += amount;
           summary.installmentCount++;
         }
-        if (status === 'completed' || status === 'paid') {
+        if (t.fullyPaid || (!t.isCredit && !t.isInstallment)) {
           summary.completedCount++;
         }
-        if (status === 'overdue') {
+        if (this.isOverdue(t)) {
           summary.overdueCount++;
         }
 
@@ -213,29 +258,35 @@ class CustomerTransactionService {
         summary.paymentMethods[method] = (summary.paymentMethods[method] || 0) + 1;
 
         // Monthly spending
-        const month = new Date(t.createdAt).toLocaleString('en-US', { month: 'short', year: 'numeric' });
-        summary.monthlySpending[month] = (summary.monthlySpending[month] || 0) + amount;
+        if (t.createdAt) {
+          const month = new Date(t.createdAt).toLocaleString('en-US', { month: 'short', year: 'numeric' });
+          summary.monthlySpending[month] = (summary.monthlySpending[month] || 0) + amount;
+        }
 
         // Product frequency
         t.items?.forEach(item => {
           const key = item.productId || item.id;
-          productCount[key] = productCount[key] || {
-            id: key,
-            name: item.name,
-            sku: item.sku,
-            count: 0,
-            total: 0
-          };
+          if (!productCount[key]) {
+            productCount[key] = {
+              id: key,
+              name: item.name,
+              sku: item.sku,
+              count: 0,
+              total: 0
+            };
+          }
           productCount[key].count += item.quantity;
           productCount[key].total += item.price * item.quantity;
         });
 
         // First and last transaction
-        if (!summary.firstTransaction || new Date(t.createdAt) < new Date(summary.firstTransaction)) {
-          summary.firstTransaction = t.createdAt;
-        }
-        if (!summary.lastTransaction || new Date(t.createdAt) > new Date(summary.lastTransaction)) {
-          summary.lastTransaction = t.createdAt;
+        if (t.createdAt) {
+          if (!summary.firstTransaction || new Date(t.createdAt) < new Date(summary.firstTransaction)) {
+            summary.firstTransaction = t.createdAt;
+          }
+          if (!summary.lastTransaction || new Date(t.createdAt) > new Date(summary.lastTransaction)) {
+            summary.lastTransaction = t.createdAt;
+          }
         }
       });
 
@@ -256,6 +307,14 @@ class CustomerTransactionService {
       summary.formattedAverageTicket = this.formatCurrency(summary.averageTicket);
       summary.formattedTotalCredit = this.formatCurrency(summary.totalCredit);
       summary.formattedTotalInstallment = this.formatCurrency(summary.totalInstallment);
+
+      console.log(`📊 Customer ${customer.name} summary:`, {
+        totalSpent: summary.totalSpent,
+        totalTransactions: summary.totalTransactions,
+        creditCount: summary.creditCount,
+        installmentCount: summary.installmentCount,
+        lastTransaction: summary.lastTransaction
+      });
 
       return summary;
     } catch (error) {
@@ -287,7 +346,6 @@ class CustomerTransactionService {
           nextPaymentDate: this.calculateNextPaymentDate(t)
         }))
         .sort((a, b) => {
-          // Sort by overdue first, then by due date
           if (a.isOverdue && !b.isOverdue) return -1;
           if (!a.isOverdue && b.isOverdue) return 1;
           return new Date(a.dueDate || a.date) - new Date(b.dueDate || b.date);
@@ -308,17 +366,16 @@ class CustomerTransactionService {
     if (!lastPayment) return transaction.dueDate;
     
     const nextDate = new Date(lastPayment.date);
-    nextDate.setMonth(nextDate.getMonth() + 1); // Assuming monthly payments
+    nextDate.setMonth(nextDate.getMonth() + 1);
     return nextDate.toISOString();
   }
 
   // Record a payment for a credit/installment transaction
   async recordCustomerPayment(transactionId, amount, paymentMethod = 'Cash') {
     try {
-      const result = await transactionService.recordPayment(transactionId, amount);
+      const result = await transactionService.recordPayment(transactionId, amount, paymentMethod);
       
       if (result.success) {
-        // Notify listeners
         this.notifyListeners({
           type: 'payment-recorded',
           transactionId,
@@ -342,16 +399,14 @@ class CustomerTransactionService {
       const summary = await this.getCustomerSummary(customerId);
       const transactions = await this.getCustomerTransactionsWithDetails(customerId);
       
-      // Calculate points earned (1 point per $10 spent)
       const pointsEarned = Math.floor((summary?.totalSpent || 0) / 10);
       
-      // Get redemption history
       const redemptions = transactions
         .filter(t => t.notes?.toLowerCase().includes('points redemption'))
         .map(t => ({
           date: t.createdAt,
           amount: t.discount || 0,
-          points: Math.floor((t.discount || 0) * 10) // Points used
+          points: Math.floor((t.discount || 0) * 10)
         }));
 
       return {
@@ -359,12 +414,54 @@ class CustomerTransactionService {
         totalEarned: pointsEarned,
         totalRedeemed: redemptions.reduce((sum, r) => sum + r.points, 0),
         redemptions,
-        pointsPerDollar: 0.1, // 10 points per dollar
+        pointsPerDollar: 0.1,
         nextReward: pointsEarned >= 1000 ? 'Available' : `${1000 - pointsEarned} points to next reward`
       };
     } catch (error) {
       console.error('❌ Failed to get loyalty stats:', error);
       return null;
+    }
+  }
+
+  // Force refresh customer summary (useful after restore)
+  async refreshCustomerSummary(customerId) {
+    const summary = await this.getCustomerSummary(customerId);
+    if (summary) {
+      this.notifyListeners({
+        type: 'customer-summary-refreshed',
+        customerId,
+        summary
+      });
+    }
+    return summary;
+  }
+
+  // Force refresh all customer summaries
+  async refreshAllCustomerSummaries() {
+    try {
+      await db.ensureInitialized();
+      const allCustomers = await db.getAll('customers');
+      let refreshedCount = 0;
+      
+      for (const customer of allCustomers) {
+        const summary = await this.refreshCustomerSummary(customer.id);
+        if (summary) {
+          refreshedCount++;
+        }
+      }
+      
+      console.log(`✅ Refreshed summaries for ${refreshedCount} customers`);
+      
+      this.notifyListeners({
+        type: 'all-summaries-refreshed',
+        count: refreshedCount,
+        timestamp: new Date().toISOString()
+      });
+      
+      return { success: true, count: refreshedCount };
+    } catch (error) {
+      console.error('❌ Failed to refresh customer summaries:', error);
+      return { success: false, error: error.message };
     }
   }
 }

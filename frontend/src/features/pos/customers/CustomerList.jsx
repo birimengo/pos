@@ -1,5 +1,6 @@
-// src/features/pos/customers/CustomerList.jsx (updated with transaction summary)
-import { useState, useEffect } from 'react';
+// src/features/pos/customers/CustomerList.jsx
+
+import { useState, useEffect, useCallback } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useCustomers } from '../context/CustomerContext';
 import { Icons } from '../../../components/ui/Icons';
@@ -16,42 +17,93 @@ export default function CustomerList() {
   const [searchTerm, setSearchTerm] = useState('');
   const [customerSummaries, setCustomerSummaries] = useState({});
   const [loadingSummaries, setLoadingSummaries] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   
   const { theme, getTheme } = useTheme();
-  const { state, dispatch } = useCustomers();
+  const { state, dispatch, reloadCustomers } = useCustomers();
   const currentTheme = getTheme(theme);
 
   // Load summaries for all customers
-  useEffect(() => {
-    const loadSummaries = async () => {
-      if (state.customers.length === 0) return;
-      
-      setLoadingSummaries(true);
-      const summaries = {};
-      
-      await Promise.all(
-        state.customers.map(async (customer) => {
+  const loadSummaries = useCallback(async () => {
+    if (state.customers.length === 0) {
+      setCustomerSummaries({});
+      return;
+    }
+    
+    setLoadingSummaries(true);
+    const summaries = {};
+    
+    await Promise.all(
+      state.customers.map(async (customer) => {
+        try {
           const summary = await customerTransactionService.getCustomerSummary(customer.id);
           if (summary) {
             summaries[customer.id] = summary;
           }
-        })
-      );
+        } catch (error) {
+          console.error(`Failed to load summary for customer ${customer.id}:`, error);
+        }
+      })
+    );
+    
+    setCustomerSummaries(summaries);
+    setLoadingSummaries(false);
+  }, [state.customers]);
+
+  // Load summaries when customers change
+  useEffect(() => {
+    loadSummaries();
+  }, [loadSummaries]);
+
+  // Listen for cloud restore events to refresh data
+  useEffect(() => {
+    const handleDataRestored = async (event) => {
+      console.log('🔄 Cloud data restored, refreshing customer list...', event.detail);
+      setRefreshing(true);
       
-      setCustomerSummaries(summaries);
-      setLoadingSummaries(false);
+      // Reload customers from context/database
+      if (reloadCustomers) {
+        await reloadCustomers();
+      }
+      
+      // Reload summaries
+      await loadSummaries();
+      
+      setRefreshing(false);
     };
 
-    loadSummaries();
-  }, [state.customers]);
+    // Listen for customer stats updates
+    const handleCustomerStatsUpdated = (event) => {
+      console.log('📊 Customer stats updated, refreshing summaries...', event.detail);
+      loadSummaries();
+    };
+
+    window.addEventListener('cloud-data-restored', handleDataRestored);
+    window.addEventListener('customer-stats-updated', handleCustomerStatsUpdated);
+    
+    return () => {
+      window.removeEventListener('cloud-data-restored', handleDataRestored);
+      window.removeEventListener('customer-stats-updated', handleCustomerStatsUpdated);
+    };
+  }, [loadSummaries, reloadCustomers]);
+
+  // Handle manual refresh
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    if (reloadCustomers) {
+      await reloadCustomers();
+    }
+    await loadSummaries();
+    setRefreshing(false);
+  };
 
   // Sort and filter customers
   const processedCustomers = state.customers
     .filter(c => {
       const matchesSearch = 
         c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        c.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        c.phone.includes(searchTerm);
+        (c.email && c.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (c.phone && c.phone.includes(searchTerm));
       
       if (!matchesSearch) return false;
       
@@ -128,6 +180,12 @@ export default function CustomerList() {
     </button>
   );
 
+  // Format large numbers with commas
+  const formatNumber = (num) => {
+    if (!num) return '0';
+    return num.toLocaleString();
+  };
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -135,8 +193,17 @@ export default function CustomerList() {
         <h1 className={`text-xl font-bold ${currentTheme.colors.text}`}>Customers</h1>
         <div className="flex gap-2">
           <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className={`px-3 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.hover} flex items-center gap-2 transition-all`}
+            title="Refresh customer data"
+          >
+            <Icons.refresh className={`text-sm ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button
             onClick={() => setView('add')}
-            className={`px-3 py-1.5 text-sm rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white flex items-center gap-2`}
+            className={`px-3 py-1.5 text-sm rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white flex items-center gap-2 shadow-md hover:shadow-lg transition-all`}
           >
             <Icons.add className="text-sm" /> Add Customer
           </button>
@@ -153,8 +220,16 @@ export default function CustomerList() {
             placeholder="Search by name, email, or phone..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className={`w-full pl-10 pr-4 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
+            className={`w-full pl-10 pr-4 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} focus:outline-none focus:ring-2 focus:ring-blue-500`}
           />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              className={`absolute right-3 top-2.5 ${currentTheme.colors.textMuted} hover:text-gray-700 dark:hover:text-gray-300`}
+            >
+              <Icons.x className="text-sm" />
+            </button>
+          )}
         </div>
 
         {/* Filter Chips */}
@@ -163,7 +238,7 @@ export default function CustomerList() {
             onClick={() => setFilterType('all')}
             className={`px-3 py-1 text-xs rounded-full transition-colors ${
               filterType === 'all'
-                ? `bg-gradient-to-r ${currentTheme.colors.accent} text-white`
+                ? `bg-gradient-to-r ${currentTheme.colors.accent} text-white shadow-sm`
                 : `${currentTheme.colors.hover} ${currentTheme.colors.textSecondary}`
             }`}
           >
@@ -173,7 +248,7 @@ export default function CustomerList() {
             onClick={() => setFilterType('hasCredit')}
             className={`px-3 py-1 text-xs rounded-full transition-colors ${
               filterType === 'hasCredit'
-                ? 'bg-purple-500 text-white'
+                ? 'bg-purple-500 text-white shadow-sm'
                 : `${currentTheme.colors.hover} text-purple-600 dark:text-purple-400`
             }`}
           >
@@ -183,7 +258,7 @@ export default function CustomerList() {
             onClick={() => setFilterType('hasInstallment')}
             className={`px-3 py-1 text-xs rounded-full transition-colors ${
               filterType === 'hasInstallment'
-                ? 'bg-blue-500 text-white'
+                ? 'bg-blue-500 text-white shadow-sm'
                 : `${currentTheme.colors.hover} text-blue-600 dark:text-blue-400`
             }`}
           >
@@ -193,7 +268,7 @@ export default function CustomerList() {
             onClick={() => setFilterType('overdue')}
             className={`px-3 py-1 text-xs rounded-full transition-colors ${
               filterType === 'overdue'
-                ? 'bg-red-500 text-white'
+                ? 'bg-red-500 text-white shadow-sm'
                 : `${currentTheme.colors.hover} text-red-600 dark:text-red-400`
             }`}
           >
@@ -203,7 +278,7 @@ export default function CustomerList() {
             onClick={() => setFilterType('recent')}
             className={`px-3 py-1 text-xs rounded-full transition-colors ${
               filterType === 'recent'
-                ? 'bg-green-500 text-white'
+                ? 'bg-green-500 text-white shadow-sm'
                 : `${currentTheme.colors.hover} text-green-600 dark:text-green-400`
             }`}
           >
@@ -222,10 +297,47 @@ export default function CustomerList() {
         </div>
       </div>
 
+      {/* Stats Summary */}
+      {state.customers.length > 0 && !loadingSummaries && (
+        <div className={`p-3 rounded-lg ${currentTheme.colors.accentLight} border ${currentTheme.colors.border}`}>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+            <div>
+              <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Customers</p>
+              <p className={`text-lg font-bold ${currentTheme.accentText}`}>{state.customers.length}</p>
+            </div>
+            <div>
+              <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Spent</p>
+              <p className={`text-lg font-bold ${currentTheme.accentText}`}>
+                {customerTransactionService.formatCurrency(
+                  Object.values(customerSummaries).reduce((sum, s) => sum + (s.totalSpent || 0), 0)
+                )}
+              </p>
+            </div>
+            <div>
+              <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Points</p>
+              <p className={`text-lg font-bold ${currentTheme.accentText}`}>
+                {formatNumber(state.customers.reduce((sum, c) => sum + (c.loyaltyPoints || 0), 0))}
+              </p>
+            </div>
+            <div>
+              <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Transactions</p>
+              <p className={`text-lg font-bold ${currentTheme.accentText}`}>
+                {formatNumber(Object.values(customerSummaries).reduce((sum, s) => sum + (s.totalTransactions || 0), 0))}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Customer Grid */}
-      {loadingSummaries ? (
+      {loadingSummaries || refreshing ? (
         <div className="flex justify-center py-12">
-          <Icons.refresh className={`animate-spin text-2xl ${currentTheme.colors.textMuted}`} />
+          <div className="text-center">
+            <Icons.refresh className={`animate-spin text-3xl ${currentTheme.colors.textMuted} mb-2`} />
+            <p className={`text-sm ${currentTheme.colors.textMuted}`}>
+              {refreshing ? 'Refreshing customer data...' : 'Loading customer summaries...'}
+            </p>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -236,55 +348,62 @@ export default function CustomerList() {
               averageTicket: 0,
               creditCount: 0,
               installmentCount: 0,
-              overdueCount: 0
+              overdueCount: 0,
+              lastTransaction: customer.lastVisit
             };
             
             return (
               <div
                 key={customer.id}
                 onClick={() => handleViewCustomer(customer)}
-                className={`p-4 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.card} cursor-pointer transition-all hover:shadow-lg relative`}
+                className={`p-4 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.card} cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] relative group`}
               >
                 {/* Badges */}
                 <div className="absolute top-2 right-2 flex gap-1">
                   {summary.creditCount > 0 && (
-                    <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] rounded-full">
+                    <span className="px-2 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] rounded-full font-medium">
                       {summary.creditCount} Credit
                     </span>
                   )}
                   {summary.installmentCount > 0 && (
-                    <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] rounded-full">
+                    <span className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[10px] rounded-full font-medium">
                       {summary.installmentCount} Install
                     </span>
                   )}
                   {summary.overdueCount > 0 && (
-                    <span className="px-2 py-0.5 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-[10px] rounded-full">
+                    <span className="px-2 py-0.5 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-[10px] rounded-full font-medium">
                       {summary.overdueCount} Overdue
                     </span>
                   )}
                 </div>
 
                 <div className="flex justify-between items-start mb-3 pr-16">
-                  <div>
-                    <h3 className={`font-medium ${currentTheme.colors.text}`}>{customer.name}</h3>
-                    <p className={`text-xs ${currentTheme.colors.textMuted}`}>{customer.email}</p>
-                    <p className={`text-xs ${currentTheme.colors.textMuted}`}>{customer.phone}</p>
+                  <div className="flex-1 min-w-0">
+                    <h3 className={`font-semibold ${currentTheme.colors.text} truncate`}>
+                      {customer.name}
+                    </h3>
+                    <p className={`text-xs ${currentTheme.colors.textMuted} truncate`}>
+                      {customer.email || 'No email'}
+                    </p>
+                    <p className={`text-xs ${currentTheme.colors.textMuted} truncate`}>
+                      {customer.phone || 'No phone'}
+                    </p>
                   </div>
-                  <div className="flex gap-1">
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); setSelectedCustomer(customer); setView('edit'); }}
-                      className={`p-1 rounded ${currentTheme.colors.hover}`}
-                    >
-                      <Icons.edit className={`text-sm ${currentTheme.colors.textSecondary}`} />
-                    </button>
-                  </div>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setSelectedCustomer(customer); setView('edit'); }}
+                    className={`p-1 rounded ${currentTheme.colors.hover} opacity-0 group-hover:opacity-100 transition-opacity`}
+                  >
+                    <Icons.edit className={`text-sm ${currentTheme.colors.textSecondary}`} />
+                  </button>
                 </div>
                 
                 {/* Stats Grid */}
                 <div className={`border-t ${currentTheme.colors.border} pt-3 grid grid-cols-2 gap-2 text-center`}>
                   <div>
                     <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Points</p>
-                    <p className={`text-sm font-bold ${currentTheme.accentText}`}>{customer.loyaltyPoints || 0}</p>
+                    <p className={`text-sm font-bold ${currentTheme.accentText}`}>
+                      {formatNumber(customer.loyaltyPoints || 0)}
+                    </p>
                   </div>
                   <div>
                     <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Lifetime</p>
@@ -294,7 +413,9 @@ export default function CustomerList() {
                   </div>
                   <div>
                     <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Transactions</p>
-                    <p className={`text-sm font-bold ${currentTheme.colors.text}`}>{summary.totalTransactions}</p>
+                    <p className={`text-sm font-bold ${currentTheme.colors.text}`}>
+                      {summary.totalTransactions}
+                    </p>
                   </div>
                   <div>
                     <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Average</p>
@@ -304,10 +425,16 @@ export default function CustomerList() {
                   </div>
                   <div className="col-span-2">
                     <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Last Visit</p>
-                    <p className={`text-xs ${currentTheme.colors.text}`}>
+                    <p className={`text-xs ${currentTheme.colors.text} font-medium`}>
                       {summary.lastTransaction 
-                        ? new Date(summary.lastTransaction).toLocaleDateString()
-                        : customer.lastVisit || 'Never'
+                        ? new Date(summary.lastTransaction).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric'
+                          })
+                        : customer.lastVisit 
+                          ? new Date(customer.lastVisit).toLocaleDateString()
+                          : 'Never'
                       }
                     </p>
                   </div>
@@ -319,16 +446,20 @@ export default function CustomerList() {
       )}
 
       {/* Empty State */}
-      {processedCustomers.length === 0 && (
+      {processedCustomers.length === 0 && !loadingSummaries && !refreshing && (
         <div className="text-center py-12">
-          <Icons.users className="text-4xl mx-auto mb-3 text-gray-400" />
-          <p className={`text-sm ${currentTheme.colors.textMuted}`}>No customers found</p>
-          <button
-            onClick={() => setView('add')}
-            className={`mt-3 px-4 py-2 text-sm rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white`}
-          >
-            Add Your First Customer
-          </button>
+          <Icons.users className="text-5xl mx-auto mb-3 text-gray-400" />
+          <p className={`text-sm ${currentTheme.colors.textMuted} mb-2`}>
+            {searchTerm ? 'No customers match your search' : 'No customers found'}
+          </p>
+          {!searchTerm && (
+            <button
+              onClick={() => setView('add')}
+              className={`mt-2 px-4 py-2 text-sm rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white shadow-md hover:shadow-lg transition-all`}
+            >
+              Add Your First Customer
+            </button>
+          )}
         </div>
       )}
 
