@@ -43,14 +43,37 @@ export const getTransactionByReceipt = async (req, res) => {
 // Create transaction
 export const createTransaction = async (req, res) => {
   try {
-    // Check if transaction with this receipt number already exists
     const existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
     if (existingTransaction) {
       console.log('⚠️ Transaction with receipt number already exists:', req.body.receiptNumber);
       return res.status(200).json(existingTransaction);
     }
     
-    const transaction = new Transaction(req.body);
+    const transactionData = {
+      receiptNumber: req.body.receiptNumber,
+      customer: req.body.customer,
+      items: req.body.items,
+      subtotal: req.body.subtotal,
+      discount: req.body.discount || 0,
+      tax: req.body.tax || 0,
+      total: req.body.total,
+      paymentMethod: req.body.paymentMethod,
+      change: req.body.change || 0,
+      notes: req.body.notes || '',
+      createdAt: req.body.createdAt || new Date(),
+      
+      // Credit/Installment fields
+      isCredit: req.body.isCredit || false,
+      isInstallment: req.body.isInstallment || false,
+      paid: req.body.paid || 0,
+      remaining: req.body.remaining || 0,
+      initialPayment: req.body.initialPayment || 0,
+      dueDate: req.body.dueDate || null,
+      fullyPaid: req.body.remaining <= 0,
+      paymentHistory: req.body.paymentHistory || []
+    };
+    
+    const transaction = new Transaction(transactionData);
     await transaction.save();
     
     // Update customer loyalty points if customer exists
@@ -84,20 +107,33 @@ export const createTransaction = async (req, res) => {
   }
 };
 
-// Sync transaction (for offline sync) - FIXED with duplicate check
+// Sync transaction (for offline sync) - FIXED with credit/installment fields
 export const syncTransaction = async (req, res) => {
   try {
     console.log('📥 Incoming transaction sync:', {
       receiptNumber: req.body.receiptNumber,
       hasCustomer: !!req.body.customer,
-      customerData: req.body.customer
+      isCredit: req.body.isCredit,
+      isInstallment: req.body.isInstallment,
+      paid: req.body.paid,
+      remaining: req.body.remaining
     });
     
-    // CRITICAL FIX: Check if transaction already exists by receipt number
-    const existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
+    // Check if transaction already exists by receipt number
+    let existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
     
     if (existingTransaction) {
-      console.log('✅ Transaction already exists in cloud, returning existing:', existingTransaction.receiptNumber);
+      // Update existing transaction with new payment info if needed
+      if (req.body.paid !== undefined || req.body.remaining !== undefined) {
+        if (req.body.paid !== undefined) existingTransaction.paid = req.body.paid;
+        if (req.body.remaining !== undefined) existingTransaction.remaining = req.body.remaining;
+        existingTransaction.fullyPaid = existingTransaction.remaining <= 0;
+        if (req.body.paymentHistory) {
+          existingTransaction.paymentHistory = req.body.paymentHistory;
+        }
+        await existingTransaction.save();
+        console.log('✅ Transaction updated:', existingTransaction.receiptNumber);
+      }
       return res.json({ 
         success: true, 
         id: existingTransaction._id, 
@@ -106,16 +142,43 @@ export const syncTransaction = async (req, res) => {
       });
     }
     
-    // Create new transaction if it doesn't exist
-    const transaction = new Transaction(req.body);
+    // Create new transaction with all fields including credit/installment data
+    const transactionData = {
+      receiptNumber: req.body.receiptNumber,
+      customer: req.body.customer,
+      items: req.body.items,
+      subtotal: req.body.subtotal,
+      discount: req.body.discount || 0,
+      tax: req.body.tax || 0,
+      total: req.body.total,
+      paymentMethod: req.body.paymentMethod,
+      change: req.body.change || 0,
+      notes: req.body.notes || '',
+      createdAt: req.body.createdAt || new Date(),
+      
+      // Credit/Installment fields
+      isCredit: req.body.isCredit || false,
+      isInstallment: req.body.isInstallment || false,
+      paid: req.body.paid || 0,
+      remaining: req.body.remaining || 0,
+      initialPayment: req.body.initialPayment || 0,
+      dueDate: req.body.dueDate || null,
+      fullyPaid: req.body.remaining <= 0,
+      paymentHistory: req.body.paymentHistory || []
+    };
+    
+    const transaction = new Transaction(transactionData);
     await transaction.save();
-    console.log('📦 New transaction saved:', transaction.receiptNumber);
+    console.log('📦 New transaction saved:', transaction.receiptNumber, {
+      isCredit: transaction.isCredit,
+      isInstallment: transaction.isInstallment,
+      paid: transaction.paid,
+      remaining: transaction.remaining
+    });
+    
     res.json({ success: true, id: transaction._id, transaction });
   } catch (error) {
-    // Handle duplicate key error gracefully
     if (error.code === 11000) {
-      console.log('⚠️ Duplicate key error, transaction may already exist');
-      // Try to find and return the existing transaction
       const existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
       if (existingTransaction) {
         return res.json({ 
@@ -162,7 +225,6 @@ export const updateTransactionStatus = async (req, res) => {
       return res.status(404).json({ error: 'Transaction not found' });
     }
     
-    // If refunding, restore stock
     if (status === 'refunded' && transaction.status === 'completed') {
       for (const item of transaction.items) {
         if (item.productId) {

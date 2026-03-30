@@ -1,4 +1,5 @@
-// src/features/pos/POSLayout.jsx (Updated with Invoicing, Quotations, Suppliers)
+// src/features/pos/POSLayout.jsx
+
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { useTheme } from '../../context/ThemeContext';
@@ -22,6 +23,7 @@ import InstallmentSales from './installments/InstallmentSales';
 import Invoicing from './invoicing/Invoicing';
 import Quotations from './quotations/Quotations';
 import Suppliers from './suppliers/Suppliers';
+import Transactions from './Transactions/Transactions'; // New Transactions component
 
 export default function POSLayout() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -62,6 +64,7 @@ export default function POSLayout() {
     { name: 'Checkout', path: '/pos/checkout', icon: Icons.shoppingBag },
     { name: 'Inventory', path: '/pos/inventory', icon: Icons.package },
     { name: 'Customers', path: '/pos/customers', icon: Icons.users },
+    { name: 'Transactions', path: '/pos/transactions', icon: Icons.receipt }, // NEW Transactions button
     { name: 'Purchase Orders', path: '/pos/purchase-orders', icon: Icons.truck },
     { name: 'Employees', path: '/pos/employees', icon: Icons.user },
     { name: 'Stores', path: '/pos/stores', icon: Icons.grid },
@@ -296,6 +299,7 @@ export default function POSLayout() {
             <Route path="/checkout" element={<Checkout />} />
             <Route path="/inventory" element={<InventoryDashboard />} />
             <Route path="/customers" element={<CustomerList />} />
+            <Route path="/transactions" element={<Transactions />} /> {/* New Transactions route */}
             <Route path="/purchase-orders" element={<PurchaseOrders />} />
             <Route path="/employees" element={<EmployeeManagement />} />
             <Route path="/stores" element={<MultiStore />} />

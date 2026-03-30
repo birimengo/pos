@@ -48,10 +48,25 @@ class TransactionService {
       }));
 
       const total = transactionData.total;
-      const initialPayment = transactionData.initialPayment || transactionData.paid || total;
-      const remaining = transactionData.isCredit || transactionData.isInstallment 
-        ? total - initialPayment 
+      // Use paid amount if provided, otherwise use initialPayment or total
+      const paid = transactionData.paid !== undefined 
+        ? transactionData.paid 
+        : (transactionData.initialPayment || total);
+      
+      // Calculate remaining balance
+      const isCreditOrInstallment = transactionData.isCredit || transactionData.isInstallment;
+      const remaining = isCreditOrInstallment 
+        ? total - paid 
         : 0;
+
+      console.log('💾 Saving transaction with:', {
+        total,
+        paid,
+        remaining,
+        isCredit: transactionData.isCredit,
+        isInstallment: transactionData.isInstallment,
+        dueDate: transactionData.dueDate
+      });
 
       const transaction = {
         id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -68,7 +83,7 @@ class TransactionService {
         notes: transactionData.notes || '',
         status: 'completed',
         remaining: remaining,
-        paid: initialPayment,
+        paid: paid,
         dueDate: transactionData.dueDate || null,
         creditSchedule: transactionData.creditSchedule || null,
         isInstallment: transactionData.isInstallment || false,
@@ -77,11 +92,11 @@ class TransactionService {
         creditSettled: remaining <= 0,
         paymentHistory: [{
           id: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          amount: initialPayment,
+          amount: paid,
           method: transactionData.paymentMethod || 'Cash',
           date: new Date().toISOString(),
           remaining: remaining,
-          notes: 'Initial payment'
+          notes: paid === total ? 'Full payment' : `Initial payment of ${this.formatCurrency(paid)}`
         }],
         synced: false,
         syncRequired: true,
@@ -90,7 +105,7 @@ class TransactionService {
         lastSyncAttempt: null,
         createdAt: transactionData.timestamp || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        lastPaymentDate: transactionData.isCredit || transactionData.isInstallment ? new Date().toISOString() : null
+        lastPaymentDate: isCreditOrInstallment ? new Date().toISOString() : null
       };
 
       await db.saveTransaction(transaction);
@@ -99,7 +114,7 @@ class TransactionService {
         receiptNumber: transaction.receiptNumber,
         customer: transaction.customer?.name,
         total: this.formatCurrency(total),
-        paid: this.formatCurrency(initialPayment),
+        paid: this.formatCurrency(paid),
         remaining: this.formatCurrency(remaining),
         isCredit: transaction.isCredit,
         isInstallment: transaction.isInstallment
@@ -150,7 +165,8 @@ class TransactionService {
         isOverdue: this.isOverdue(t),
         formattedDate: this.formatDate(t.createdAt),
         formattedTotal: this.formatCurrency(t.total),
-        formattedRemaining: this.formatCurrency(t.remaining)
+        formattedRemaining: this.formatCurrency(t.remaining),
+        formattedPaid: this.formatCurrency(t.paid || 0)
       })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     } catch (error) {
       console.error('❌ Failed to get transactions:', error);
@@ -171,7 +187,8 @@ class TransactionService {
         isOverdue: this.isOverdue(t),
         formattedDate: this.formatDate(t.createdAt),
         formattedTotal: this.formatCurrency(t.total),
-        formattedRemaining: this.formatCurrency(t.remaining)
+        formattedRemaining: this.formatCurrency(t.remaining),
+        formattedPaid: this.formatCurrency(t.paid || 0)
       }));
     } catch (error) {
       console.error('❌ Failed to get transactions by date:', error);
@@ -317,13 +334,13 @@ class TransactionService {
         hasCustomer: !!transaction.customer,
         customerName: transaction.customer?.name,
         total: transaction.total,
+        paid: transaction.paid,
         remaining: transaction.remaining
       });
 
-      // ===== FIRST: CHECK IF TRANSACTION ALREADY EXISTS IN CLOUD =====
+      // Check if transaction already exists in cloud
       let existingCloudTransaction = null;
       
-      // Check by receipt number (most reliable)
       try {
         console.log('🔍 Checking for existing transaction by receipt number:', transaction.receiptNumber);
         const checkResult = await api.getTransactionByReceipt(transaction.receiptNumber);
@@ -335,7 +352,6 @@ class TransactionService {
         console.log('⚠️ No transaction found with receipt number:', transaction.receiptNumber);
       }
       
-      // If not found by receipt number and we have a cloud ID, try by ID
       if (!existingCloudTransaction && (transaction.cloudId || transaction._id)) {
         try {
           const cloudId = transaction.cloudId || transaction._id;
@@ -350,7 +366,6 @@ class TransactionService {
         }
       }
 
-      // If transaction already exists in cloud, just mark as synced
       if (existingCloudTransaction) {
         console.log('✅ Transaction already exists in cloud, marking as synced');
         
@@ -376,7 +391,7 @@ class TransactionService {
         return { success: true, transaction: updatedTransaction, alreadyExists: true };
       }
 
-      // ===== PREPARE TRANSACTION DATA FOR CLOUD =====
+      // Prepare transaction data for cloud
       const customerData = transaction.customer ? {
         name: transaction.customer.name,
         email: transaction.customer.email || '',
@@ -401,17 +416,15 @@ class TransactionService {
         paymentMethod: transaction.paymentMethod,
         change: transaction.change || 0,
         status: 'completed',
-        createdAt: transaction.createdAt || new Date().toISOString()
+        createdAt: transaction.createdAt || new Date().toISOString(),
+        // Include payment tracking fields
+        paid: transaction.paid,
+        remaining: transaction.remaining,
+        isCredit: transaction.isCredit || false,
+        isInstallment: transaction.isInstallment || false,
+        dueDate: transaction.dueDate || null,
+        fullyPaid: transaction.fullyPaid || false
       };
-
-      if (transaction.isCredit || transaction.isInstallment) {
-        transactionData.isCredit = transaction.isCredit;
-        transactionData.isInstallment = transaction.isInstallment;
-        transactionData.remaining = transaction.remaining;
-        transactionData.paid = transaction.paid;
-        transactionData.dueDate = transaction.dueDate;
-        transactionData.fullyPaid = transaction.fullyPaid;
-      }
 
       if (customerData && Object.keys(customerData).length > 0) {
         transactionData.customer = customerData;
@@ -424,8 +437,10 @@ class TransactionService {
         receiptNumber: transactionData.receiptNumber,
         customer: transactionData.customer?.name,
         total: transactionData.total,
+        paid: transactionData.paid,
         remaining: transactionData.remaining,
-        isCredit: transactionData.isCredit
+        isCredit: transactionData.isCredit,
+        isInstallment: transactionData.isInstallment
       });
 
       // Send to cloud
@@ -468,7 +483,9 @@ class TransactionService {
         console.log('✅ Transaction synced to cloud:', {
           localId: transaction.id,
           cloudId: newCloudId,
-          receiptNumber: transaction.receiptNumber
+          receiptNumber: transaction.receiptNumber,
+          paid: transaction.paid,
+          remaining: transaction.remaining
         });
 
         return { success: true, transaction: updatedTransaction };
@@ -610,6 +627,7 @@ class TransactionService {
           transaction.creditSettled = true;
           transaction.settledAt = new Date().toISOString();
         }
+        console.log('🎉 Transaction fully paid!');
       }
 
       await db.put('transactions', transaction);

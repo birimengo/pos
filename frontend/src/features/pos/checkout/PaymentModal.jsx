@@ -1,4 +1,5 @@
 // src/features/pos/checkout/PaymentModal.jsx
+
 import { useState } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { Icons } from '../../../components/ui/Icons';
@@ -50,7 +51,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
         dueDate.setMonth(today.getMonth() + 12);
         break;
       default:
-        dueDate.setMonth(today.getMonth() + 1); // Default 1 month
+        dueDate.setMonth(today.getMonth() + 1);
     }
     
     return dueDate.toISOString().split('T')[0];
@@ -61,10 +62,17 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
     setAmountPaid(value);
     setShowInsufficientOptions(false);
     setInsufficientAction(null);
+    // Reset down payment when amount changes
+    if (value < total) {
+      setDownPayment(value);
+    } else {
+      setDownPayment(0);
+    }
   };
 
   const handleProceedWithShortage = () => {
     setShowInsufficientOptions(true);
+    setDownPayment(amountPaid);
   };
 
   const handleInstallmentOption = () => {
@@ -74,24 +82,34 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
 
   const handleCreditOption = () => {
     setInsufficientAction('credit');
-    setCreditPaymentSchedule('monthly'); // Default to monthly
+    setCreditPaymentSchedule('monthly');
+  };
+
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(amount || 0);
   };
 
   const handlePayment = async () => {
     setIsProcessing(true);
     
-    // FIXED: Always use 'completed' as status to match MongoDB enum
-    // Store payment plan info in custom fields instead
     let paymentNotes = '';
     let dueDate = null;
     let isInstallment = false;
     let isCredit = false;
+    let actualPaidAmount = amountPaid;
     
     if (amountPaid < total) {
       if (insufficientAction === 'installment') {
         isInstallment = true;
-        paymentNotes = `Installment plan: Down payment $${downPayment.toFixed(2)}, Remaining $${remainingAmount.toFixed(2)} over ${installmentPeriod} months`;
-        dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // Default 30 days for first payment
+        const monthlyPayment = remainingAmount / installmentPeriod;
+        paymentNotes = `Installment plan: Down payment ${formatCurrency(downPayment)}, Remaining ${formatCurrency(remainingAmount)} over ${installmentPeriod} months (${formatCurrency(monthlyPayment)}/month)`;
+        dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+        actualPaidAmount = downPayment;
       } else if (insufficientAction === 'credit') {
         isCredit = true;
         dueDate = customDueDate || calculateDueDate();
@@ -102,7 +120,8 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
           '12months': '12 Months'
         }[creditPaymentSchedule] || 'Monthly';
         
-        paymentNotes = `Credit sale: $${remainingAmount.toFixed(2)} to be paid by ${new Date(dueDate).toLocaleDateString()} (${scheduleText} schedule)`;
+        paymentNotes = `Credit sale: ${formatCurrency(remainingAmount)} to be paid by ${new Date(dueDate).toLocaleDateString()} (${scheduleText} schedule)`;
+        actualPaidAmount = amountPaid;
       }
     }
 
@@ -116,22 +135,22 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
         remaining: remainingAmount > 0 ? remainingAmount : 0,
         change: change > 0 ? change : 0,
         timestamp: new Date().toISOString(),
-        // Always use 'completed' for status to match MongoDB enum
         status: 'completed',
         notes: paymentNotes,
         dueDate: dueDate,
         creditSchedule: insufficientAction === 'credit' ? creditPaymentSchedule : null,
-        // Add flags for tracking payment type
         isInstallment: isInstallment,
         isCredit: isCredit,
-        // Determine stock action based on payment type
-        stockAction: (amountPaid >= total) ? 'reduce' : 
-                    (isCredit ? 'reduce' : 'reserve') // Credit reduces stock, installment reserves
+        initialPayment: actualPaidAmount,
+        paid: actualPaidAmount,
+        // Installment specific fields
+        installmentPeriod: isInstallment ? installmentPeriod : null,
+        downPayment: isInstallment ? downPayment : null,
+        monthlyPayment: isInstallment ? remainingAmount / installmentPeriod : null
       });
     }, 1500);
   };
 
-  // Handle schedule selection without triggering parent button
   const handleScheduleSelect = (e, schedule) => {
     e.stopPropagation();
     setCreditPaymentSchedule(schedule);
@@ -153,7 +172,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
           {/* Total Amount */}
           <div className={`p-3 ${currentTheme.colors.accentLight} rounded-lg text-center`}>
             <p className={`text-sm ${currentTheme.colors.textSecondary}`}>Total Amount</p>
-            <p className={`text-3xl font-bold ${currentTheme.accentText}`}>${total.toFixed(2)}</p>
+            <p className={`text-3xl font-bold ${currentTheme.accentText}`}>{formatCurrency(total)}</p>
           </div>
 
           {/* Payment Methods */}
@@ -195,6 +214,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                   className={`flex-1 px-3 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
                   min="0"
                   step="0.01"
+                  placeholder="Enter amount"
                 />
                 <button
                   onClick={() => setAmountPaid(total)}
@@ -207,14 +227,14 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
               {/* Change or Shortage Display */}
               {amountPaid >= total && (
                 <p className={`text-sm mt-2 ${currentTheme.colors.textSecondary}`}>
-                  Change: <span className="text-green-600 font-bold">${change.toFixed(2)}</span>
+                  Change: <span className="text-green-600 font-bold">{formatCurrency(change)}</span>
                 </p>
               )}
               
               {isShort && !showInsufficientOptions && (
                 <div className="mt-3 space-y-2">
                   <p className={`text-sm text-amber-600 dark:text-amber-400`}>
-                    Short by: <span className="font-bold">${remainingAmount.toFixed(2)}</span>
+                    Short by: <span className="font-bold">{formatCurrency(remainingAmount)}</span>
                   </p>
                   <button
                     onClick={handleProceedWithShortage}
@@ -252,18 +272,33 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                   <div className="flex-1">
                     <p className={`text-sm font-medium ${currentTheme.colors.text}`}>Pay in Installments</p>
                     <p className={`text-xs ${currentTheme.colors.textSecondary} mt-1`}>
-                      Pay ${amountPaid.toFixed(2)} now, remaining ${remainingAmount.toFixed(2)} in installments
+                      Pay {formatCurrency(amountPaid)} now, remaining {formatCurrency(remainingAmount)} in installments
                     </p>
                     {insufficientAction === 'installment' && (
                       <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                        <div>
+                          <p className={`text-xs font-medium mb-1 ${currentTheme.colors.text}`}>Down Payment:</p>
+                          <input
+                            type="number"
+                            value={downPayment}
+                            onChange={(e) => setDownPayment(parseFloat(e.target.value) || 0)}
+                            min={0}
+                            max={total}
+                            step="0.01"
+                            className={`w-full px-2 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
+                          />
+                          <p className={`text-[10px] ${currentTheme.colors.textSecondary} mt-1`}>
+                            Remaining after down payment: {formatCurrency(total - downPayment)}
+                          </p>
+                        </div>
                         <select
                           value={installmentPeriod}
                           onChange={(e) => setInstallmentPeriod(parseInt(e.target.value))}
-                          className={`w-full px-2 py-1.5 text-xs rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
+                          className={`w-full px-2 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
                         >
-                          <option value={3}>3 months (${(remainingAmount/3).toFixed(2)}/month)</option>
-                          <option value={6}>6 months (${(remainingAmount/6).toFixed(2)}/month)</option>
-                          <option value={12}>12 months (${(remainingAmount/12).toFixed(2)}/month)</option>
+                          <option value={3}>3 months ({(total - downPayment) / 3} per month)</option>
+                          <option value={6}>6 months ({(total - downPayment) / 6} per month)</option>
+                          <option value={12}>12 months ({(total - downPayment) / 12} per month)</option>
                         </select>
                         <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>
                           Note: Product will be reserved until fully paid
@@ -294,7 +329,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                   <div className="flex-1">
                     <p className={`text-sm font-medium ${currentTheme.colors.text}`}>Credit Sale</p>
                     <p className={`text-xs ${currentTheme.colors.textSecondary} mt-1`}>
-                      Pay ${amountPaid.toFixed(2)} now, remaining ${remainingAmount.toFixed(2)} on credit
+                      Pay {formatCurrency(amountPaid)} now, remaining {formatCurrency(remainingAmount)} on credit
                     </p>
                     {insufficientAction === 'credit' && (
                       <div className="mt-3 space-y-3" onClick={(e) => e.stopPropagation()}>
@@ -356,7 +391,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                           <div className="flex justify-between items-center mt-1">
                             <span className={`text-xs ${currentTheme.colors.textSecondary}`}>Remaining:</span>
                             <span className={`text-sm font-medium text-amber-600`}>
-                              ${remainingAmount.toFixed(2)}
+                              {formatCurrency(remainingAmount)}
                             </span>
                           </div>
                         </div>
@@ -369,7 +404,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                             value={customDueDate}
                             onChange={(e) => setCustomDueDate(e.target.value)}
                             min={new Date().toISOString().split('T')[0]}
-                            className={`w-full px-2 py-1.5 text-xs rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
+                            className={`w-full px-2 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
                           />
                         </div>
 
@@ -438,7 +473,6 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
             Cancel
           </button>
           
-          {/* Determine if payment can proceed */}
           {(() => {
             const canProceed = 
               (paymentMethod === 'cash' && amountPaid >= total) || 

@@ -1,0 +1,361 @@
+// src/features/pos/Transactions/Transactions.jsx
+
+import { useState, useEffect } from 'react';
+import { useTheme } from '../../../context/ThemeContext';
+import { Icons } from '../../../components/ui/Icons';
+import { transactionService } from '../services/transactionService';
+import { db } from '../services/database';
+
+export default function Transactions() {
+  const [transactions, setTransactions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [showDetails, setShowDetails] = useState(false);
+  
+  const { theme, getTheme } = useTheme();
+  const currentTheme = getTheme(theme);
+
+  useEffect(() => {
+    loadTransactions();
+  }, []);
+
+  const loadTransactions = async () => {
+    setLoading(true);
+    try {
+      await db.ensureInitialized();
+      const allTransactions = await transactionService.getAllTransactionsLocally();
+      setTransactions(allTransactions);
+    } catch (error) {
+      console.error('Failed to load transactions:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredTransactions = transactions.filter(t => {
+    if (filter === 'credit' && !t.isCredit) return false;
+    if (filter === 'installment' && !t.isInstallment) return false;
+    if (filter === 'pending' && (t.fullyPaid || t.remaining <= 0)) return false;
+    if (filter === 'completed' && (!t.fullyPaid && t.remaining > 0)) return false;
+    
+    if (searchTerm) {
+      const searchLower = searchTerm.toLowerCase();
+      return t.receiptNumber.toLowerCase().includes(searchLower) ||
+             t.customer?.name?.toLowerCase().includes(searchLower) ||
+             t.paymentMethod?.toLowerCase().includes(searchLower);
+    }
+    
+    return true;
+  });
+
+  const getStatusBadge = (transaction) => {
+    if (transaction.isCredit && !transaction.fullyPaid && transaction.remaining > 0) {
+      return <span className="px-2 py-1 text-xs rounded-full bg-purple-100 text-purple-700">Credit (${transaction.remaining?.toFixed(2)} due)</span>;
+    }
+    if (transaction.isInstallment && !transaction.fullyPaid && transaction.remaining > 0) {
+      return <span className="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700">Installment (${transaction.remaining?.toFixed(2)} remaining)</span>;
+    }
+    if (transaction.fullyPaid && (transaction.isCredit || transaction.isInstallment)) {
+      return <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">Paid (${transaction.paid?.toFixed(2)})</span>;
+    }
+    if (transaction.fullyPaid) {
+      return <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-700">Paid</span>;
+    }
+    return <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700">Completed</span>;
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2
+    }).format(amount || 0);
+  };
+
+  const totals = {
+    count: filteredTransactions.length,
+    total: filteredTransactions.reduce((sum, t) => sum + t.total, 0),
+    pending: filteredTransactions.filter(t => !t.fullyPaid && t.remaining > 0).reduce((sum, t) => sum + (t.remaining || 0), 0)
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <h1 className={`text-xl font-bold ${currentTheme.colors.text}`}>Transactions</h1>
+        <button
+          onClick={loadTransactions}
+          className={`px-3 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.hover} flex items-center gap-2`}
+        >
+          <Icons.refresh className="text-sm" />
+          Refresh
+        </button>
+      </div>
+
+      {/* Stats Summary */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className={`p-4 rounded-lg ${currentTheme.colors.card} border ${currentTheme.colors.border}`}>
+          <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Transactions</p>
+          <p className={`text-2xl font-bold ${currentTheme.accentText}`}>{totals.count}</p>
+        </div>
+        <div className={`p-4 rounded-lg ${currentTheme.colors.card} border ${currentTheme.colors.border}`}>
+          <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Total Revenue</p>
+          <p className={`text-2xl font-bold ${currentTheme.accentText}`}>{formatCurrency(totals.total)}</p>
+        </div>
+        <div className={`p-4 rounded-lg ${currentTheme.colors.card} border ${currentTheme.colors.border}`}>
+          <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Pending Balance</p>
+          <p className={`text-2xl font-bold ${currentTheme.accentText}`}>{formatCurrency(totals.pending)}</p>
+        </div>
+      </div>
+
+      {/* Search and Filters */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Icons.search className={`absolute left-3 top-2.5 ${currentTheme.colors.textMuted} text-sm`} />
+          <input
+            type="text"
+            placeholder="Search by receipt number, customer, or payment method..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className={`w-full pl-10 pr-4 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
+          />
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setFilter('all')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              filter === 'all' 
+                ? `bg-gradient-to-r ${currentTheme.colors.accent} text-white` 
+                : `${currentTheme.colors.hover} ${currentTheme.colors.textSecondary}`
+            }`}
+          >
+            All
+          </button>
+          <button
+            onClick={() => setFilter('credit')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              filter === 'credit' 
+                ? 'bg-purple-500 text-white' 
+                : `${currentTheme.colors.hover} text-purple-600`
+            }`}
+          >
+            Credit
+          </button>
+          <button
+            onClick={() => setFilter('installment')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              filter === 'installment' 
+                ? 'bg-blue-500 text-white' 
+                : `${currentTheme.colors.hover} text-blue-600`
+            }`}
+          >
+            Installment
+          </button>
+          <button
+            onClick={() => setFilter('pending')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              filter === 'pending' 
+                ? 'bg-yellow-500 text-white' 
+                : `${currentTheme.colors.hover} text-yellow-600`
+            }`}
+          >
+            Pending
+          </button>
+          <button
+            onClick={() => setFilter('completed')}
+            className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+              filter === 'completed' 
+                ? 'bg-green-500 text-white' 
+                : `${currentTheme.colors.hover} text-green-600`
+            }`}
+          >
+            Completed
+          </button>
+        </div>
+      </div>
+
+      {/* Transactions Table */}
+      {loading ? (
+        <div className="flex justify-center py-12">
+          <Icons.refresh className={`animate-spin text-2xl ${currentTheme.colors.textMuted}`} />
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className={`border-b ${currentTheme.colors.border}`}>
+              <tr className="text-left">
+                <th className="pb-2 text-xs font-medium">Receipt #</th>
+                <th className="pb-2 text-xs font-medium">Customer</th>
+                <th className="pb-2 text-xs font-medium">Date</th>
+                <th className="pb-2 text-xs font-medium">Total</th>
+                <th className="pb-2 text-xs font-medium">Paid</th>
+                <th className="pb-2 text-xs font-medium">Remaining</th>
+                <th className="pb-2 text-xs font-medium">Method</th>
+                <th className="pb-2 text-xs font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredTransactions.map((transaction) => (
+                <tr
+                  key={transaction.id}
+                  onClick={() => {
+                    setSelectedTransaction(transaction);
+                    setShowDetails(true);
+                  }}
+                  className={`border-b ${currentTheme.colors.border} cursor-pointer hover:bg-opacity-50 ${currentTheme.colors.hover} transition-colors`}
+                >
+                  <td className="py-3 text-xs font-mono">{transaction.receiptNumber}</td>
+                  <td className="py-3 text-xs">{transaction.customer?.name || 'Guest'}</td>
+                  <td className="py-3 text-xs">{formatDate(transaction.createdAt)}</td>
+                  <td className="py-3 text-xs font-semibold">{formatCurrency(transaction.total)}</td>
+                  <td className="py-3 text-xs text-green-600">{formatCurrency(transaction.paid)}</td>
+                  <td className="py-3 text-xs text-yellow-600">{formatCurrency(transaction.remaining)}</td>
+                  <td className="py-3 text-xs">{transaction.paymentMethod}</td>
+                  <td className="py-3 text-xs">{getStatusBadge(transaction)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          
+          {filteredTransactions.length === 0 && (
+            <div className="text-center py-12">
+              <Icons.receipt className="text-4xl mx-auto mb-2 text-gray-400" />
+              <p className={`text-sm ${currentTheme.colors.textMuted}`}>No transactions found</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Transaction Details Modal */}
+      {showDetails && selectedTransaction && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className={`w-full max-w-md ${currentTheme.colors.card} rounded-xl shadow-2xl max-h-[80vh] overflow-hidden flex flex-col`}>
+            <div className={`p-4 border-b ${currentTheme.colors.border} flex justify-between items-center`}>
+              <h2 className={`text-lg font-semibold ${currentTheme.colors.text}`}>
+                Transaction Details
+              </h2>
+              <button
+                onClick={() => setShowDetails(false)}
+                className={`p-1 rounded-lg ${currentTheme.colors.hover}`}
+              >
+                <Icons.x className="text-lg" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className={`text-xs ${currentTheme.colors.textSecondary}`}>Receipt Number:</span>
+                  <span className={`text-xs font-mono ${currentTheme.colors.text}`}>{selectedTransaction.receiptNumber}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={`text-xs ${currentTheme.colors.textSecondary}`}>Customer:</span>
+                  <span className={`text-xs ${currentTheme.colors.text}`}>{selectedTransaction.customer?.name || 'Guest'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={`text-xs ${currentTheme.colors.textSecondary}`}>Date:</span>
+                  <span className={`text-xs ${currentTheme.colors.text}`}>{new Date(selectedTransaction.createdAt).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className={`text-xs ${currentTheme.colors.textSecondary}`}>Payment Method:</span>
+                  <span className={`text-xs ${currentTheme.colors.text}`}>{selectedTransaction.paymentMethod}</span>
+                </div>
+                {(selectedTransaction.isCredit || selectedTransaction.isInstallment) && selectedTransaction.dueDate && (
+                  <div className="flex justify-between">
+                    <span className={`text-xs ${currentTheme.colors.textSecondary}`}>Due Date:</span>
+                    <span className={`text-xs font-medium text-amber-600`}>{new Date(selectedTransaction.dueDate).toLocaleDateString()}</span>
+                  </div>
+                )}
+              </div>
+              
+              <div className={`border-t ${currentTheme.colors.border} pt-3`}>
+                <h3 className={`text-sm font-medium mb-2 ${currentTheme.colors.text}`}>Items</h3>
+                <div className="space-y-2">
+                  {selectedTransaction.items?.map((item, idx) => (
+                    <div key={idx} className="flex justify-between text-xs">
+                      <span>{item.name} x{item.quantity}</span>
+                      <span>{formatCurrency(item.price * item.quantity)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              <div className={`border-t ${currentTheme.colors.border} pt-3 space-y-1`}>
+                <div className="flex justify-between text-xs">
+                  <span>Subtotal:</span>
+                  <span>{formatCurrency(selectedTransaction.subtotal)}</span>
+                </div>
+                {selectedTransaction.discount > 0 && (
+                  <div className="flex justify-between text-xs text-green-600">
+                    <span>Discount:</span>
+                    <span>-{formatCurrency(selectedTransaction.discount)}</span>
+                  </div>
+                )}
+                {selectedTransaction.tax > 0 && (
+                  <div className="flex justify-between text-xs">
+                    <span>Tax:</span>
+                    <span>{formatCurrency(selectedTransaction.tax)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm font-bold pt-1">
+                  <span>Total:</span>
+                  <span>{formatCurrency(selectedTransaction.total)}</span>
+                </div>
+                <div className="flex justify-between text-xs text-green-600">
+                  <span>Paid:</span>
+                  <span>{formatCurrency(selectedTransaction.paid)}</span>
+                </div>
+                {selectedTransaction.remaining > 0 && (
+                  <div className="flex justify-between text-xs text-yellow-600">
+                    <span>Remaining:</span>
+                    <span>{formatCurrency(selectedTransaction.remaining)}</span>
+                  </div>
+                )}
+              </div>
+              
+              {selectedTransaction.paymentHistory && selectedTransaction.paymentHistory.length > 0 && (
+                <div className={`border-t ${currentTheme.colors.border} pt-3`}>
+                  <h3 className={`text-xs font-medium mb-2 ${currentTheme.colors.text}`}>Payment History</h3>
+                  <div className="space-y-2">
+                    {selectedTransaction.paymentHistory.map((payment, idx) => (
+                      <div key={idx} className="flex justify-between text-xs">
+                        <span>{new Date(payment.date).toLocaleDateString()}</span>
+                        <span className="text-green-600">{formatCurrency(payment.amount)}</span>
+                        <span className="text-gray-500">{payment.method}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {selectedTransaction.notes && (
+                <div className={`border-t ${currentTheme.colors.border} pt-3`}>
+                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Notes:</p>
+                  <p className={`text-xs ${currentTheme.colors.text} mt-1`}>{selectedTransaction.notes}</p>
+                </div>
+              )}
+            </div>
+            <div className={`p-4 border-t ${currentTheme.colors.border}`}>
+              <button
+                onClick={() => setShowDetails(false)}
+                className={`w-full px-4 py-2 rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white`}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

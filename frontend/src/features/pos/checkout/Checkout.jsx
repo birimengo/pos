@@ -25,21 +25,28 @@ const formatPrice = (price) => {
   }
 };
 
+// Helper function to format currency for notes
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(amount || 0);
+};
+
 // Helper function to find existing customer
 const findExistingCustomer = (customer, customersList) => {
   if (!customer) return null;
   
-  // Search by ID first
   let existing = customersList.find(c => String(c.id) === String(customer.id));
   
-  // If not found by ID and we have email, search by email
   if (!existing && customer.email) {
     existing = customersList.find(c => 
       c.email && c.email.toLowerCase() === customer.email.toLowerCase()
     );
   }
   
-  // If still not found and we have phone, search by phone
   if (!existing && customer.phone) {
     existing = customersList.find(c => 
       c.phone && c.phone === customer.phone
@@ -149,7 +156,6 @@ export default function Checkout() {
     
     loadSyncStatus();
     const interval = setInterval(loadSyncStatus, 30000);
-    
     return () => clearInterval(interval);
   }, []);
 
@@ -317,7 +323,6 @@ export default function Checkout() {
       alert(`Cannot add more. Only ${product.stock} in stock.`);
       return;
     }
-    
     cartDispatch({ type: 'ADD_ITEM', payload: product });
   };
 
@@ -344,32 +349,27 @@ export default function Checkout() {
     }
   };
 
-  // Customer selection - UPDATED for returning customers
+  // Customer selection
   const handleSelectCustomer = async (customer) => {
-    // Normalize customer with string ID
     const normalizedCustomer = {
       ...customer,
       id: String(customer.id || Date.now())
     };
     
-    // First, check if customer already exists in context
     let existingCustomer = findExistingCustomer(normalizedCustomer, customerState.customers);
     
     if (existingCustomer) {
-      // Use existing customer from context
-      console.log('✅ Using existing customer from context:', existingCustomer.name, 'ID:', existingCustomer.id);
+      console.log('✅ Using existing customer from context:', existingCustomer.name);
       cartDispatch({ type: 'SET_CUSTOMER', payload: existingCustomer });
       setShowCustomerModal(false);
       return;
     }
     
-    // Check if customer exists in database (for returning customers from cloud sync)
     try {
       const allCustomers = await customerService.getAllCustomersLocally();
       existingCustomer = findExistingCustomer(normalizedCustomer, allCustomers);
       
       if (existingCustomer) {
-        // Found in database but not in context - add to context
         console.log('✅ Found existing customer in database:', existingCustomer.name);
         customerDispatch({ type: 'ADD_CUSTOMER', payload: existingCustomer });
         cartDispatch({ type: 'SET_CUSTOMER', payload: existingCustomer });
@@ -380,13 +380,12 @@ export default function Checkout() {
       console.error('Error checking database for customer:', error);
     }
     
-    // New customer - validate email/phone uniqueness
     if (normalizedCustomer.email) {
       const emailExists = customerState.customers.some(c => 
         c.email && c.email.toLowerCase() === normalizedCustomer.email.toLowerCase()
       );
       if (emailExists) {
-        alert(`Customer with email "${normalizedCustomer.email}" already exists. Please search and select them.`);
+        alert(`Customer with email "${normalizedCustomer.email}" already exists.`);
         return;
       }
     }
@@ -396,12 +395,11 @@ export default function Checkout() {
         c.phone && c.phone === normalizedCustomer.phone
       );
       if (phoneExists) {
-        alert(`Customer with phone "${normalizedCustomer.phone}" already exists. Please search and select them.`);
+        alert(`Customer with phone "${normalizedCustomer.phone}" already exists.`);
         return;
       }
     }
     
-    // Save new customer to database
     try {
       const result = await customerService.saveCustomerLocally(normalizedCustomer);
       if (result.success) {
@@ -410,8 +408,6 @@ export default function Checkout() {
         cartDispatch({ type: 'SET_CUSTOMER', payload: savedCustomer });
         console.log('✅ New customer saved:', savedCustomer.name);
       } else {
-        console.error('Failed to save customer:', result.error);
-        // Still set customer in cart even if save failed (will retry sync)
         cartDispatch({ type: 'SET_CUSTOMER', payload: normalizedCustomer });
       }
     } catch (error) {
@@ -465,10 +461,9 @@ export default function Checkout() {
     }
   };
 
-  // Save transaction
+  // Save transaction - FIXED for credit/installment payments with down payment
   const saveTransaction = async (saleData) => {
     try {
-      // Prepare customer data with string ID
       const customerForTransaction = saleData.customer ? {
         id: String(saleData.customer.id),
         _id: saleData.customer._id,
@@ -478,7 +473,46 @@ export default function Checkout() {
         loyaltyPoints: saleData.customer.loyaltyPoints || 0
       } : null;
 
-      // Prepare transaction data
+      // Calculate the actual paid amount and remaining
+      const isCreditOrInstallment = saleData.isCredit || saleData.isInstallment;
+      
+      // Determine paid amount from various possible sources
+      let paidAmount = saleData.paid;
+      if (paidAmount === undefined && saleData.initialPayment !== undefined) {
+        paidAmount = saleData.initialPayment;
+      }
+      if (paidAmount === undefined && saleData.downPayment !== undefined) {
+        paidAmount = saleData.downPayment;
+      }
+      if (paidAmount === undefined) {
+        paidAmount = isCreditOrInstallment ? 0 : saleData.total;
+      }
+      
+      const remainingAmount = isCreditOrInstallment 
+        ? saleData.total - paidAmount
+        : 0;
+
+      // Build notes including installment plan details if present
+      let notes = saleData.notes || '';
+      if (saleData.isInstallment && saleData.installmentPeriod) {
+        const monthlyPayment = remainingAmount / saleData.installmentPeriod;
+        notes = `Installment plan: Down payment ${formatCurrency(saleData.downPayment || paidAmount)}, Remaining ${formatCurrency(remainingAmount)} over ${saleData.installmentPeriod} months (${formatCurrency(monthlyPayment)}/month)`;
+        if (saleData.notes) {
+          notes = `${saleData.notes}\n${notes}`;
+        }
+      } else if (saleData.isCredit && saleData.dueDate) {
+        const scheduleText = {
+          'weekly': 'Weekly',
+          '3months': '3 Months',
+          '6months': '6 Months',
+          '12months': '12 Months'
+        }[saleData.creditSchedule] || 'Monthly';
+        notes = `Credit sale: ${formatCurrency(remainingAmount)} to be paid by ${new Date(saleData.dueDate).toLocaleDateString()} (${scheduleText} schedule)`;
+        if (saleData.notes) {
+          notes = `${saleData.notes}\n${notes}`;
+        }
+      }
+
       const transactionData = {
         receiptNumber: saleData.receiptNumber,
         items: saleData.items.map(item => ({
@@ -497,7 +531,7 @@ export default function Checkout() {
         paymentMethod: saleData.method,
         change: saleData.change || 0,
         customer: customerForTransaction,
-        notes: saleData.notes || '',
+        notes: notes,
         timestamp: saleData.timestamp,
         
         // Payment tracking
@@ -505,17 +539,26 @@ export default function Checkout() {
         isInstallment: saleData.isInstallment || false,
         dueDate: saleData.dueDate || null,
         
-        // Initial payment info
-        initialPayment: saleData.isCredit || saleData.isInstallment 
-          ? saleData.initialPayment || 0 
-          : saleData.total,
+        // These fields control the payment tracking
+        paid: paidAmount,
+        remaining: remainingAmount,
+        initialPayment: paidAmount,
         
         // Sync flags
         synced: false,
         syncRequired: true
       };
 
-      // Save to database
+      console.log('💾 Saving transaction:', {
+        receiptNumber: transactionData.receiptNumber,
+        total: transactionData.total,
+        paid: transactionData.paid,
+        remaining: transactionData.remaining,
+        isCredit: transactionData.isCredit,
+        isInstallment: transactionData.isInstallment,
+        notes: transactionData.notes
+      });
+
       const result = await transactionService.saveTransactionLocally(transactionData);
       
       if (result.success) {
@@ -523,6 +566,7 @@ export default function Checkout() {
           id: result.transactionId,
           receiptNumber: result.transaction.receiptNumber,
           total: result.transaction.total,
+          paid: result.transaction.paid,
           remaining: result.transaction.remaining
         });
         
@@ -538,7 +582,7 @@ export default function Checkout() {
 
   // Update customer loyalty
   const updateCustomerLoyalty = async (customerId, amount, isCredit = false, isInstallment = false) => {
-    const pointsEarned = Math.floor(amount / 10); // 1 point per $10
+    const pointsEarned = Math.floor(amount / 10);
     const customerIdStr = String(customerId);
     
     try {
@@ -550,7 +594,6 @@ export default function Checkout() {
       );
       
       if (result.success) {
-        // Update context
         customerDispatch({
           type: 'ADD_LOYALTY_POINTS',
           payload: {
@@ -561,7 +604,6 @@ export default function Checkout() {
             isInstallment
           }
         });
-        
         console.log(`✅ Loyalty points added: +${pointsEarned} for customer ${customerIdStr}`);
       }
     } catch (error) {
@@ -569,7 +611,7 @@ export default function Checkout() {
     }
   };
 
-  // Handle payment completion
+  // Handle payment completion - FIXED for down payment
   const handlePaymentComplete = async (paymentDetails) => {
     setProcessingSale(true);
     
@@ -582,6 +624,29 @@ export default function Checkout() {
       const tax = calculateTax();
       const total = calculateTotal();
       const subtotal = cartState.subtotal - cartState.discount;
+
+      // Determine payment amounts
+      const isCreditOrInstallment = paymentDetails.isCredit || paymentDetails.isInstallment;
+      
+      // Get the paid amount from paymentDetails - prioritize initialPayment, then downPayment, then amount
+      let paidAmount = total;
+      if (isCreditOrInstallment) {
+        paidAmount = paymentDetails.initialPayment || paymentDetails.downPayment || paymentDetails.amount || 0;
+      }
+      
+      const remainingAmount = isCreditOrInstallment 
+        ? total - paidAmount
+        : 0;
+
+      console.log('💰 Payment calculation:', {
+        total,
+        isCreditOrInstallment,
+        paidAmount,
+        remainingAmount,
+        initialPayment: paymentDetails.initialPayment,
+        downPayment: paymentDetails.downPayment,
+        amount: paymentDetails.amount
+      });
 
       // Prepare sale data
       const sale = {
@@ -597,13 +662,29 @@ export default function Checkout() {
         total,
         isCredit: paymentDetails.isCredit || false,
         isInstallment: paymentDetails.isInstallment || false,
-        initialPayment: paymentDetails.initialPayment || total
+        initialPayment: paidAmount,
+        paid: paidAmount,
+        remaining: remainingAmount,
+        dueDate: paymentDetails.dueDate || null,
+        installmentPeriod: paymentDetails.installmentPeriod || null,
+        downPayment: paymentDetails.downPayment || paidAmount,
+        creditSchedule: paymentDetails.creditSchedule || null,
+        notes: paymentDetails.notes || cartState.notes || ''
       };
+
+      console.log('💾 Preparing to save transaction:', {
+        receiptNumber: sale.receiptNumber,
+        total: sale.total,
+        paid: sale.paid,
+        remaining: sale.remaining,
+        isCredit: sale.isCredit,
+        isInstallment: sale.isInstallment
+      });
 
       // Save transaction
       const savedTransaction = await saveTransaction(sale);
 
-      // Update customer loyalty if customer exists
+      // Update customer loyalty if customer exists (based on total, not just paid)
       if (cartState.customer) {
         await updateCustomerLoyalty(
           cartState.customer.id,
@@ -628,8 +709,12 @@ export default function Checkout() {
       setShowReceipt(true);
 
       // Show success message
-      if (paymentDetails.isCredit || paymentDetails.isInstallment) {
-        alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale recorded! Initial payment: ${formatPrice(paymentDetails.initialPayment || 0)}. Remaining: ${formatPrice(total - (paymentDetails.initialPayment || 0))}`);
+      if (isCreditOrInstallment) {
+        if (remainingAmount > 0) {
+          alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale recorded!\n\nInitial Payment: ${formatPrice(paidAmount)}\nRemaining Balance: ${formatPrice(remainingAmount)}\nDue Date: ${paymentDetails.dueDate ? new Date(paymentDetails.dueDate).toLocaleDateString() : 'Not set'}`);
+        } else {
+          alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale fully paid!`);
+        }
       }
 
     } catch (error) {
@@ -649,6 +734,8 @@ export default function Checkout() {
       const storePhone = inventoryState.store?.phone || '(555) 123-4567';
       const tax = lastSale?.tax || calculateTax();
       const total = lastSale?.total || calculateTotal();
+      const paid = lastSale?.paid || total;
+      const remaining = lastSale?.remaining || 0;
       
       printWindow.document.write(`
         <html>
@@ -701,6 +788,16 @@ export default function Checkout() {
                 <span>TOTAL:</span>
                 <span>$${formatPrice(total)}</span>
               </div>
+              <div class="item">
+                <span>Paid:</span>
+                <span>$${formatPrice(paid)}</span>
+              </div>
+              ${remaining > 0 ? `
+                <div class="item" style="color: #e67e22;">
+                  <span>Remaining:</span>
+                  <span>$${formatPrice(remaining)}</span>
+                </div>
+              ` : ''}
               ${lastSale?.change > 0 ? `
                 <div class="item">
                   <span>Change:</span>
@@ -712,7 +809,7 @@ export default function Checkout() {
               <div class="credit-info">
                 <strong>${lastSale.isCredit ? 'CREDIT SALE' : 'INSTALLMENT SALE'}</strong><br>
                 Initial Payment: $${formatPrice(lastSale.initialPayment || 0)}<br>
-                Remaining Balance: $${formatPrice(total - (lastSale.initialPayment || 0))}<br>
+                ${remaining > 0 ? `Remaining Balance: $${formatPrice(remaining)}<br>` : ''}
                 Due Date: ${lastSale.dueDate ? new Date(lastSale.dueDate).toLocaleDateString() : 'Not set'}
               </div>
             ` : ''}
@@ -993,7 +1090,6 @@ export default function Checkout() {
                 
                 return (
                   <div key={item.id} className={`p-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.card} space-y-2`}>
-                    {/* Item Header */}
                     <div className="flex items-start gap-1">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start justify-between gap-1">
@@ -1012,14 +1108,12 @@ export default function Checkout() {
                             <Icons.trash className="text-xs" />
                           </button>
                         </div>
-                        
                         <p className={`text-[8px] ${currentTheme.colors.textMuted} mt-0.5`}>
                           SKU: {item.sku}
                         </p>
                       </div>
                     </div>
 
-                    {/* Quantity Controls */}
                     <div className="flex items-center justify-between mt-1">
                       <div className="flex items-center gap-0.5">
                         <button
@@ -1039,13 +1133,11 @@ export default function Checkout() {
                           +
                         </button>
                       </div>
-                      
                       <p className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
                         ${formatPrice(item.price * item.quantity)}
                       </p>
                     </div>
 
-                    {/* Low Stock Warning */}
                     {isLowStock && (
                       <div className={`flex items-center gap-2 text-[10px] ${themeSpecific.lowStockBg} ${themeSpecific.lowStockText} p-1.5 rounded`}>
                         <Icons.alert className="text-xs" />
@@ -1087,9 +1179,7 @@ export default function Checkout() {
             {cartState.discount > 0 && (
               <div className="flex justify-between items-center text-[12px]">
                 <span className={currentTheme.colors.textSecondary}>Discount</span>
-                <span className="text-green-600">
-                  -${formatPrice(cartState.discount)}
-                </span>
+                <span className="text-green-600">-${formatPrice(cartState.discount)}</span>
               </div>
             )}
             <div className="flex justify-between items-center text-[14px]">
