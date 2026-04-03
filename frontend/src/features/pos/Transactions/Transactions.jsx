@@ -5,6 +5,7 @@ import { useTheme } from '../../../context/ThemeContext';
 import { Icons } from '../../../components/ui/Icons';
 import { transactionService } from '../services/transactionService';
 import { db } from '../services/database';
+import EditTransactionModal from './EditTransactionModal';
 
 export default function Transactions() {
   const [transactions, setTransactions] = useState([]);
@@ -13,6 +14,9 @@ export default function Transactions() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [transactionToDelete, setTransactionToDelete] = useState(null);
   
   const { theme, getTheme } = useTheme();
   const currentTheme = getTheme(theme);
@@ -31,6 +35,46 @@ export default function Transactions() {
       console.error('Failed to load transactions:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDeleteTransaction = async () => {
+    if (!transactionToDelete) return;
+    
+    try {
+      const result = await transactionService.deleteTransaction(transactionToDelete.id);
+      if (result.success) {
+        await loadTransactions();
+        setShowDeleteConfirm(false);
+        setShowDetails(false);
+        setTransactionToDelete(null);
+        alert('Transaction deleted successfully');
+      } else {
+        alert('Failed to delete transaction: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      alert('Error deleting transaction');
+    }
+  };
+
+  const handleEditTransaction = (transaction) => {
+    setSelectedTransaction(transaction);
+    setShowEditModal(true);
+    setShowDetails(false);
+  };
+
+  const handleUpdateTransaction = async (updatedTransaction) => {
+    try {
+      await db.ensureInitialized();
+      await db.put('transactions', updatedTransaction);
+      await loadTransactions();
+      setShowEditModal(false);
+      setSelectedTransaction(null);
+      alert('Transaction updated successfully');
+    } catch (error) {
+      console.error('Update error:', error);
+      alert('Failed to update transaction');
     }
   };
 
@@ -94,13 +138,15 @@ export default function Transactions() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <h1 className={`text-xl font-bold ${currentTheme.colors.text}`}>Transactions</h1>
-        <button
-          onClick={loadTransactions}
-          className={`px-3 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.hover} flex items-center gap-2`}
-        >
-          <Icons.refresh className="text-sm" />
-          Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={loadTransactions}
+            className={`px-3 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.hover} flex items-center gap-2`}
+          >
+            <Icons.refresh className="text-sm" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stats Summary */}
@@ -203,30 +249,116 @@ export default function Transactions() {
                 <th className="pb-2 text-xs font-medium">Remaining</th>
                 <th className="pb-2 text-xs font-medium">Method</th>
                 <th className="pb-2 text-xs font-medium">Status</th>
-              </tr>
+                <th className="pb-2 text-xs font-medium">Actions</th>
+               </tr>
             </thead>
             <tbody>
               {filteredTransactions.map((transaction) => (
                 <tr
                   key={transaction.id}
-                  onClick={() => {
-                    setSelectedTransaction(transaction);
-                    setShowDetails(true);
-                  }}
-                  className={`border-b ${currentTheme.colors.border} cursor-pointer hover:bg-opacity-50 ${currentTheme.colors.hover} transition-colors`}
+                  className={`border-b ${currentTheme.colors.border} hover:bg-opacity-50 ${currentTheme.colors.hover} transition-colors`}
                 >
-                  <td className="py-3 text-xs font-mono">{transaction.receiptNumber}</td>
-                  <td className="py-3 text-xs">{transaction.customer?.name || 'Guest'}</td>
-                  <td className="py-3 text-xs">{formatDate(transaction.createdAt)}</td>
-                  <td className="py-3 text-xs font-semibold">{formatCurrency(transaction.total)}</td>
-                  <td className="py-3 text-xs text-green-600">{formatCurrency(transaction.paid)}</td>
-                  <td className="py-3 text-xs text-yellow-600">{formatCurrency(transaction.remaining)}</td>
-                  <td className="py-3 text-xs">{transaction.paymentMethod}</td>
-                  <td className="py-3 text-xs">{getStatusBadge(transaction)}</td>
-                </tr>
+                  <td 
+                    className="py-3 text-xs font-mono cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {transaction.receiptNumber}
+                   </td>
+                  <td 
+                    className="py-3 text-xs cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {transaction.customer?.name || 'Guest'}
+                   </td>
+                  <td 
+                    className="py-3 text-xs cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {formatDate(transaction.createdAt)}
+                   </td>
+                  <td 
+                    className="py-3 text-xs font-semibold cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {formatCurrency(transaction.total)}
+                   </td>
+                  <td 
+                    className="py-3 text-xs text-green-600 cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {formatCurrency(transaction.paid)}
+                   </td>
+                  <td 
+                    className="py-3 text-xs text-yellow-600 cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {formatCurrency(transaction.remaining)}
+                   </td>
+                  <td 
+                    className="py-3 text-xs cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {transaction.paymentMethod}
+                   </td>
+                  <td 
+                    className="py-3 text-xs cursor-pointer"
+                    onClick={() => {
+                      setSelectedTransaction(transaction);
+                      setShowDetails(true);
+                    }}
+                  >
+                    {getStatusBadge(transaction)}
+                   </td>
+                  <td className="py-3 text-xs">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditTransaction(transaction);
+                        }}
+                        className={`p-1 rounded ${currentTheme.colors.hover} text-blue-500`}
+                        title="Edit"
+                      >
+                        <Icons.edit className="text-sm" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTransactionToDelete(transaction);
+                          setShowDeleteConfirm(true);
+                        }}
+                        className={`p-1 rounded ${currentTheme.colors.hover} text-red-500`}
+                        title="Delete"
+                      >
+                        <Icons.trash className="text-sm" />
+                      </button>
+                    </div>
+                   </td>
+                 </tr>
               ))}
             </tbody>
-          </table>
+           </table>
           
           {filteredTransactions.length === 0 && (
             <div className="text-center py-12">
@@ -245,12 +377,32 @@ export default function Transactions() {
               <h2 className={`text-lg font-semibold ${currentTheme.colors.text}`}>
                 Transaction Details
               </h2>
-              <button
-                onClick={() => setShowDetails(false)}
-                className={`p-1 rounded-lg ${currentTheme.colors.hover}`}
-              >
-                <Icons.x className="text-lg" />
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleEditTransaction(selectedTransaction)}
+                  className={`p-1 rounded-lg ${currentTheme.colors.hover} text-blue-500`}
+                  title="Edit"
+                >
+                  <Icons.edit className="text-lg" />
+                </button>
+                <button
+                  onClick={() => {
+                    setTransactionToDelete(selectedTransaction);
+                    setShowDeleteConfirm(true);
+                    setShowDetails(false);
+                  }}
+                  className={`p-1 rounded-lg ${currentTheme.colors.hover} text-red-500`}
+                  title="Delete"
+                >
+                  <Icons.trash className="text-lg" />
+                </button>
+                <button
+                  onClick={() => setShowDetails(false)}
+                  className={`p-1 rounded-lg ${currentTheme.colors.hover}`}
+                >
+                  <Icons.x className="text-lg" />
+                </button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
               <div className="space-y-2">
@@ -351,6 +503,59 @@ export default function Transactions() {
                 className={`w-full px-4 py-2 rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white`}
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Transaction Modal */}
+      {showEditModal && selectedTransaction && (
+        <EditTransactionModal
+          transaction={selectedTransaction}
+          onClose={() => {
+            setShowEditModal(false);
+            setSelectedTransaction(null);
+          }}
+          onSave={handleUpdateTransaction}
+        />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && transactionToDelete && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+          <div className={`w-full max-w-md ${currentTheme.colors.card} rounded-xl shadow-2xl`}>
+            <div className={`p-4 border-b ${currentTheme.colors.border}`}>
+              <h2 className={`text-lg font-semibold ${currentTheme.colors.text}`}>Confirm Delete</h2>
+            </div>
+            <div className="p-4">
+              <p className={`text-sm ${currentTheme.colors.text}`}>
+                Are you sure you want to delete this transaction?
+              </p>
+              <p className={`text-xs ${currentTheme.colors.textMuted} mt-2`}>
+                Receipt: {transactionToDelete.receiptNumber}<br />
+                Customer: {transactionToDelete.customer?.name || 'Guest'}<br />
+                Total: {formatCurrency(transactionToDelete.total)}
+              </p>
+              <p className={`text-xs text-red-500 mt-2`}>
+                Warning: This action cannot be undone!
+              </p>
+            </div>
+            <div className={`p-4 border-t ${currentTheme.colors.border} flex gap-3`}>
+              <button
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setTransactionToDelete(null);
+                }}
+                className={`flex-1 px-4 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.hover} ${currentTheme.colors.text}`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteTransaction}
+                className={`flex-1 px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600`}
+              >
+                Delete
               </button>
             </div>
           </div>
