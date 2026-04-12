@@ -39,24 +39,51 @@ import {
   FiSun, FiMoon,
   
   // Additional icons needed for new features
-  FiFileText as FiDocument,  // For Records
-  FiCalendar as FiCalendarIcon,  // For Installments
-  FiClock as FiHistory,  // For Records history
+  FiFileText as FiDocument,
+  FiCalendar as FiCalendarIcon,
+  FiClock as FiHistory,
 } from 'react-icons/fi';
 
-// Also import from other icon packs if needed
+// Import from Material Design icons
 import { 
-  MdOutlineInstallMobile,  // For Installments
-  MdOutlinePayment,  // For Credit Sale
-  MdOutlineReceipt,  // For Records
+  MdOutlineInstallMobile,
+  MdOutlinePayment,
+  MdOutlineReceipt,
+  MdOutlineStore,
+  MdOutlineTransferWithinAStation,
+  MdOutlineSwitchAccount,
+  MdOutlineStorefront,
+  MdOutlineHome,
 } from 'react-icons/md';
 
 import {
-  BsFileEarmarkText,  // Alternative for Records
-  BsCreditCard2Front,  // For Credit Sale
-  BsCalendarCheck,  // For Installments
+  BsFileEarmarkText,
+  BsCreditCard2Front,
+  BsCalendarCheck,
+  BsShop,
+  BsArrowLeftRight,
+  BsArrowReturnLeft,
+  BsBuilding,
 } from 'react-icons/bs';
 
+import {
+  HiOutlineSwitchHorizontal,
+} from 'react-icons/hi';
+
+import {
+  IoHomeOutline,
+} from 'react-icons/io5';
+
+// Create safe icon wrapper to handle undefined icons
+const createSafeIcon = (Icon, fallback) => {
+  if (!Icon) {
+    console.warn(`Icon component is undefined, using fallback: ${fallback}`);
+    return () => <span className="inline-block">{fallback}</span>;
+  }
+  return Icon;
+};
+
+// Define all icons with fallbacks for missing ones
 export const Icons = {
   // Navigation
   home: FiHome,
@@ -204,17 +231,42 @@ export const Icons = {
   splitPayment: FiGrid,
   
   // NEW ICONS FOR RECORDS, CREDIT SALE, INSTALLMENTS
-  document: FiDocument || BsFileEarmarkText || FiFileText,  // For Records
-  records: FiDocument || MdOutlineReceipt || FiFileText,  // For Records
-  history: FiHistory || FiClock,  // For Records history
-  creditCard2: BsCreditCard2Front || FiCreditCard,  // For Credit Sale
-  payment: MdOutlinePayment || FiCreditCard,  // For Credit Sale
-  installment: MdOutlineInstallMobile || BsCalendarCheck || FiCalendarIcon,  // For Installments
-  calendarCheck: BsCalendarCheck || FiCalendarIcon,  // For Installments
-  schedule: FiCalendarIcon || FiClock,  // For Installments schedule
+  document: FiDocument || BsFileEarmarkText || FiFileText,
+  records: FiDocument || MdOutlineReceipt || FiFileText,
+  history: FiHistory || FiClock,
+  creditCard2: BsCreditCard2Front || FiCreditCard,
+  payment: MdOutlinePayment || FiCreditCard,
+  installment: MdOutlineInstallMobile || BsCalendarCheck || FiCalendarIcon,
+  calendarCheck: BsCalendarCheck || FiCalendarIcon,
+  schedule: FiCalendarIcon || FiClock,
+  
+  // STORE & TRANSFER ICONS (CRITICAL FOR MultiStore)
+  store: MdOutlineStore || BsShop || FiGrid,
+  transfer: MdOutlineTransferWithinAStation || BsArrowLeftRight || FiTruck,
+  xCircle: FiXCircle,
+  help: FiHelpCircle,
+  switch: HiOutlineSwitchHorizontal || MdOutlineSwitchAccount || FiRefreshCw,
+  building: BsBuilding || FiMapPin,
+  homeStore: MdOutlineHome || IoHomeOutline || FiHome,
+  backArrow: BsArrowReturnLeft || FiArrowLeft,
+  storefront: MdOutlineStorefront || BsShop,
   
   // Theme Icons
   sun: FiSun,
   moon: FiMoon,
-  cloud: FiCloud,
+  cloudIcon: FiCloud,
+  switchStore: HiOutlineSwitchHorizontal || MdOutlineSwitchAccount,
 };
+
+// Export a helper function to safely get icons
+export const getIcon = (iconName, fallback = null) => {
+  const Icon = Icons[iconName];
+  if (!Icon) {
+    console.warn(`Icon "${iconName}" not found in Icons object`);
+    return fallback ? () => <span className="inline-block">{fallback}</span> : null;
+  }
+  return Icon;
+};
+
+// Export default for convenience
+export default Icons;

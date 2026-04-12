@@ -1,9 +1,8 @@
 // backend/models/Transaction.js
-
 import mongoose from 'mongoose';
 
 const transactionSchema = new mongoose.Schema({
-  receiptNumber: { type: String, required: true, unique: true },
+  receiptNumber: { type: String, required: true },
   customer: {
     id: mongoose.Schema.Types.ObjectId,
     name: String,
@@ -25,7 +24,7 @@ const transactionSchema = new mongoose.Schema({
   paymentMethod: { type: String, required: true },
   change: { type: Number, default: 0 },
   status: { type: String, enum: ['completed', 'refunded', 'voided', 'credit', 'installment'], default: 'completed' },
-  storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+  storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', required: true }, // REQUIRED storeId
   employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },
   notes: String,
   receiptUrl: String,
@@ -50,7 +49,9 @@ const transactionSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// Update updatedAt on save
+// Compound unique index for receipt number per store
+transactionSchema.index({ receiptNumber: 1, storeId: 1 }, { unique: true });
+
 transactionSchema.pre('save', function() {
   this.updatedAt = Date.now();
 });

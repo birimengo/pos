@@ -1,22 +1,22 @@
 
 declare interface productDataType {
-	pushCustomers(): Promise<{	}>;
+	pushCustomers(): Promise<any>;
 
 	pushTransactions(): Promise<any>;
 
-	pushToCloud(): Promise<null | {	}>;
+	pushToCloud(): Promise<any>;
 
-	pullProducts(): Promise<{	}>;
+	pullProducts(): Promise<any>;
 
-	pullCustomers(): Promise<{	}>;
+	pullCustomers(): Promise<any>;
 
-	pullTransactions(): Promise<{	}>;
+	pullTransactions(): Promise<any>;
 
-	pullFromCloud(): Promise<null | {	}>;
+	pullFromCloud(): Promise<any>;
 
-	fullSync(): Promise<{	} | null>;
+	fullSync(): Promise<any>;
 
-	restoreFromCloud(options: {	}): Promise<{	}>;
+	restoreFromCloud(options: {	}): Promise<any>;
 
 	getSyncStatus(): Promise<any>;
 

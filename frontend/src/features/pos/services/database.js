@@ -1,5 +1,4 @@
 // src/features/pos/services/database.js
-
 import { openDB } from 'idb';
 import { opfs } from './opfsService';
 
@@ -7,9 +6,11 @@ class DatabaseService {
   constructor() {
     this.db = null;
     this.dbName = 'BizCorePOS';
-    this.dbVersion = 7; // Incremented to v7 for sync queue fixes
+    this.dbVersion = 13; // Incremented version for schema changes
     this.initPromise = null;
     this.initialized = false;
+    this.currentStoreId = null;
+    this.currentUserId = null;
   }
 
   async init() {
@@ -18,29 +19,36 @@ class DatabaseService {
     if (!this.initPromise) {
       this.initPromise = (async () => {
         try {
-          console.log('🔄 Initializing database v7 with enhanced sync queue support...');
+          console.log('🔄 Initializing database v13 with user-store isolation...');
           
           this.db = await openDB(this.dbName, this.dbVersion, {
             upgrade: async (db, oldVersion, newVersion, transaction) => {
               console.log(`Upgrading database from v${oldVersion} to v${newVersion}`);
               
-              // Delete old stores if needed for clean upgrade
-              if (oldVersion < 6) {
-                console.log('📦 Performing schema upgrade to v6');
-              }
-              
               // ==================== PRODUCTS STORE ====================
               if (!db.objectStoreNames.contains('products')) {
                 const productStore = db.createObjectStore('products', { keyPath: 'id' });
-                productStore.createIndex('sku', 'sku', { unique: true });
+                productStore.createIndex('sku', 'sku', { unique: false });
                 productStore.createIndex('barcode', 'barcode', { unique: false });
                 productStore.createIndex('category', 'category', { unique: false });
                 productStore.createIndex('synced', 'synced', { unique: false });
                 productStore.createIndex('cloudId', 'cloudId', { unique: false });
                 productStore.createIndex('updatedAt', 'updatedAt', { unique: false });
-                console.log('✅ Created products store with indexes');
+                productStore.createIndex('storeId', 'storeId', { unique: false });
+                productStore.createIndex('userId', 'userId', { unique: false });
+                productStore.createIndex('sku_storeId', ['sku', 'storeId'], { unique: true });
+                console.log('✅ Created products store with userId index');
               } else {
                 const productStore = transaction.objectStore('products');
+                if (!productStore.indexNames.contains('storeId')) {
+                  productStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!productStore.indexNames.contains('userId')) {
+                  productStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!productStore.indexNames.contains('sku_storeId')) {
+                  productStore.createIndex('sku_storeId', ['sku', 'storeId'], { unique: true });
+                }
                 if (!productStore.indexNames.contains('cloudId')) {
                   productStore.createIndex('cloudId', 'cloudId', { unique: false });
                 }
@@ -57,9 +65,17 @@ class DatabaseService {
                 customerStore.createIndex('synced', 'synced', { unique: false });
                 customerStore.createIndex('cloudId', 'cloudId', { unique: false });
                 customerStore.createIndex('updatedAt', 'updatedAt', { unique: false });
-                console.log('✅ Created customers store with non-unique email index');
+                customerStore.createIndex('storeId', 'storeId', { unique: false });
+                customerStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created customers store with userId index');
               } else {
                 const customerStore = transaction.objectStore('customers');
+                if (!customerStore.indexNames.contains('storeId')) {
+                  customerStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!customerStore.indexNames.contains('userId')) {
+                  customerStore.createIndex('userId', 'userId', { unique: false });
+                }
                 if (!customerStore.indexNames.contains('cloudId')) {
                   customerStore.createIndex('cloudId', 'cloudId', { unique: false });
                 }
@@ -71,7 +87,7 @@ class DatabaseService {
               // ==================== TRANSACTIONS STORE ====================
               if (!db.objectStoreNames.contains('transactions')) {
                 const transactionStore = db.createObjectStore('transactions', { keyPath: 'id' });
-                transactionStore.createIndex('receiptNumber', 'receiptNumber', { unique: true });
+                transactionStore.createIndex('receiptNumber', 'receiptNumber', { unique: false });
                 transactionStore.createIndex('createdAt', 'createdAt', { unique: false });
                 transactionStore.createIndex('updatedAt', 'updatedAt', { unique: false });
                 transactionStore.createIndex('synced', 'synced', { unique: false });
@@ -85,9 +101,21 @@ class DatabaseService {
                 transactionStore.createIndex('fullyPaid', 'fullyPaid', { unique: false });
                 transactionStore.createIndex('dueDate', 'dueDate', { unique: false });
                 transactionStore.createIndex('remaining', 'remaining', { unique: false });
-                console.log('✅ Created enhanced transactions store');
+                transactionStore.createIndex('storeId', 'storeId', { unique: false });
+                transactionStore.createIndex('userId', 'userId', { unique: false });
+                transactionStore.createIndex('receiptNumber_storeId', ['receiptNumber', 'storeId'], { unique: true });
+                console.log('✅ Created transactions store with userId index');
               } else {
                 const transactionStore = transaction.objectStore('transactions');
+                if (!transactionStore.indexNames.contains('storeId')) {
+                  transactionStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!transactionStore.indexNames.contains('userId')) {
+                  transactionStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!transactionStore.indexNames.contains('receiptNumber_storeId')) {
+                  transactionStore.createIndex('receiptNumber_storeId', ['receiptNumber', 'storeId'], { unique: true });
+                }
                 const requiredIndexes = [
                   'receiptNumber', 'createdAt', 'updatedAt', 'synced', 'cloudId',
                   'customerId', 'customerCloudId', 'customerEmail', 'paymentMethod',
@@ -114,9 +142,8 @@ class DatabaseService {
                 }
               }
 
-              // ==================== SYNC QUEUE STORE (FIXED) ====================
+              // ==================== SYNC QUEUE STORE ====================
               if (!db.objectStoreNames.contains('syncQueue')) {
-                // Use autoIncrement: true - DO NOT provide id manually
                 const syncQueueStore = db.createObjectStore('syncQueue', { 
                   keyPath: 'id', 
                   autoIncrement: true 
@@ -128,9 +155,18 @@ class DatabaseService {
                 syncQueueStore.createIndex('transactionId', 'transactionId', { unique: false });
                 syncQueueStore.createIndex('customerId', 'customerId', { unique: false });
                 syncQueueStore.createIndex('productId', 'productId', { unique: false });
-                console.log('✅ Created syncQueue store with auto-increment');
+                syncQueueStore.createIndex('returnId', 'returnId', { unique: false });
+                syncQueueStore.createIndex('storeId', 'storeId', { unique: false });
+                syncQueueStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created syncQueue store with userId index');
               } else {
                 const syncQueueStore = transaction.objectStore('syncQueue');
+                if (!syncQueueStore.indexNames.contains('storeId')) {
+                  syncQueueStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!syncQueueStore.indexNames.contains('userId')) {
+                  syncQueueStore.createIndex('userId', 'userId', { unique: false });
+                }
                 if (!syncQueueStore.indexNames.contains('transactionId')) {
                   syncQueueStore.createIndex('transactionId', 'transactionId', { unique: false });
                 }
@@ -140,12 +176,179 @@ class DatabaseService {
                 if (!syncQueueStore.indexNames.contains('productId')) {
                   syncQueueStore.createIndex('productId', 'productId', { unique: false });
                 }
+                if (!syncQueueStore.indexNames.contains('returnId')) {
+                  syncQueueStore.createIndex('returnId', 'returnId', { unique: false });
+                }
+              }
+
+              // ==================== STOCK HISTORY STORE ====================
+              if (!db.objectStoreNames.contains('stockHistory')) {
+                const stockHistoryStore = db.createObjectStore('stockHistory', { keyPath: 'id' });
+                stockHistoryStore.createIndex('productId', 'productId', { unique: false });
+                stockHistoryStore.createIndex('productName', 'productName', { unique: false });
+                stockHistoryStore.createIndex('adjustmentType', 'adjustmentType', { unique: false });
+                stockHistoryStore.createIndex('createdAt', 'createdAt', { unique: false });
+                stockHistoryStore.createIndex('transactionId', 'transactionId', { unique: false });
+                stockHistoryStore.createIndex('synced', 'synced', { unique: false });
+                stockHistoryStore.createIndex('storeId', 'storeId', { unique: false });
+                stockHistoryStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created stockHistory store with userId index');
+              } else {
+                const stockHistoryStore = transaction.objectStore('stockHistory');
+                if (!stockHistoryStore.indexNames.contains('storeId')) {
+                  stockHistoryStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!stockHistoryStore.indexNames.contains('userId')) {
+                  stockHistoryStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!stockHistoryStore.indexNames.contains('productId')) {
+                  stockHistoryStore.createIndex('productId', 'productId', { unique: false });
+                }
+                if (!stockHistoryStore.indexNames.contains('adjustmentType')) {
+                  stockHistoryStore.createIndex('adjustmentType', 'adjustmentType', { unique: false });
+                }
+                if (!stockHistoryStore.indexNames.contains('synced')) {
+                  stockHistoryStore.createIndex('synced', 'synced', { unique: false });
+                }
+              }
+
+              // ==================== RETURNS STORE ====================
+              if (!db.objectStoreNames.contains('returns')) {
+                const returnsStore = db.createObjectStore('returns', { keyPath: 'id' });
+                returnsStore.createIndex('originalTransactionId', 'originalTransactionId', { unique: false });
+                returnsStore.createIndex('originalReceiptNumber', 'originalReceiptNumber', { unique: false });
+                returnsStore.createIndex('createdAt', 'createdAt', { unique: false });
+                returnsStore.createIndex('returnType', 'returnType', { unique: false });
+                returnsStore.createIndex('condition', 'condition', { unique: false });
+                returnsStore.createIndex('customerId', 'customer.id', { unique: false });
+                returnsStore.createIndex('customerEmail', 'customer.email', { unique: false });
+                returnsStore.createIndex('synced', 'synced', { unique: false });
+                returnsStore.createIndex('cloudId', 'cloudId', { unique: false });
+                returnsStore.createIndex('storeId', 'storeId', { unique: false });
+                returnsStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created returns store with userId index');
+              } else {
+                const returnsStore = transaction.objectStore('returns');
+                if (!returnsStore.indexNames.contains('storeId')) {
+                  returnsStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('userId')) {
+                  returnsStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('originalTransactionId')) {
+                  returnsStore.createIndex('originalTransactionId', 'originalTransactionId', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('originalReceiptNumber')) {
+                  returnsStore.createIndex('originalReceiptNumber', 'originalReceiptNumber', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('returnType')) {
+                  returnsStore.createIndex('returnType', 'returnType', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('condition')) {
+                  returnsStore.createIndex('condition', 'condition', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('customerId')) {
+                  returnsStore.createIndex('customerId', 'customer.id', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('customerEmail')) {
+                  returnsStore.createIndex('customerEmail', 'customer.email', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('synced')) {
+                  returnsStore.createIndex('synced', 'synced', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('cloudId')) {
+                  returnsStore.createIndex('cloudId', 'cloudId', { unique: false });
+                }
+              }
+
+              // ==================== STORES STORE ====================
+              if (!db.objectStoreNames.contains('stores')) {
+                const storesStore = db.createObjectStore('stores', { keyPath: 'id' });
+                storesStore.createIndex('name', 'name', { unique: false });
+                storesStore.createIndex('city', 'city', { unique: false });
+                storesStore.createIndex('state', 'state', { unique: false });
+                storesStore.createIndex('open', 'open', { unique: false });
+                storesStore.createIndex('createdAt', 'createdAt', { unique: false });
+                storesStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+                storesStore.createIndex('isDefault', 'isDefault', { unique: false });
+                storesStore.createIndex('cloudId', 'cloudId', { unique: false });
+                storesStore.createIndex('_id', '_id', { unique: false });
+                storesStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created stores store with userId index');
+              } else {
+                const storesStore = transaction.objectStore('stores');
+                if (!storesStore.indexNames.contains('isDefault')) {
+                  storesStore.createIndex('isDefault', 'isDefault', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('userId')) {
+                  storesStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('cloudId')) {
+                  storesStore.createIndex('cloudId', 'cloudId', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('_id')) {
+                  storesStore.createIndex('_id', '_id', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('name')) {
+                  storesStore.createIndex('name', 'name', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('city')) {
+                  storesStore.createIndex('city', 'city', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('open')) {
+                  storesStore.createIndex('open', 'open', { unique: false });
+                }
+              }
+
+              // ==================== TRANSFERS STORE ====================
+              if (!db.objectStoreNames.contains('transfers')) {
+                const transfersStore = db.createObjectStore('transfers', { keyPath: 'id' });
+                transfersStore.createIndex('fromStoreId', 'fromStoreId', { unique: false });
+                transfersStore.createIndex('toStoreId', 'toStoreId', { unique: false });
+                transfersStore.createIndex('productId', 'productId', { unique: false });
+                transfersStore.createIndex('status', 'status', { unique: false });
+                transfersStore.createIndex('createdAt', 'createdAt', { unique: false });
+                transfersStore.createIndex('completedAt', 'completedAt', { unique: false });
+                transfersStore.createIndex('fromStore', 'fromStore', { unique: false });
+                transfersStore.createIndex('toStore', 'toStore', { unique: false });
+                transfersStore.createIndex('storeId', 'storeId', { unique: false });
+                transfersStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created transfers store with userId index');
+              } else {
+                const transfersStore = transaction.objectStore('transfers');
+                if (!transfersStore.indexNames.contains('storeId')) {
+                  transfersStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('userId')) {
+                  transfersStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('fromStoreId')) {
+                  transfersStore.createIndex('fromStoreId', 'fromStoreId', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('toStoreId')) {
+                  transfersStore.createIndex('toStoreId', 'toStoreId', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('status')) {
+                  transfersStore.createIndex('status', 'status', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('fromStore')) {
+                  transfersStore.createIndex('fromStore', 'fromStore', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('toStore')) {
+                  transfersStore.createIndex('toStore', 'toStore', { unique: false });
+                }
               }
 
               // ==================== SETTINGS STORE ====================
               if (!db.objectStoreNames.contains('settings')) {
-                db.createObjectStore('settings', { keyPath: 'key' });
-                console.log('✅ Created settings store');
+                const settingsStore = db.createObjectStore('settings', { keyPath: 'key' });
+                settingsStore.createIndex('userId', 'userId', { unique: false });
+                console.log('✅ Created settings store with userId index');
+              } else {
+                const settingsStore = transaction.objectStore('settings');
+                if (!settingsStore.indexNames.contains('userId')) {
+                  settingsStore.createIndex('userId', 'userId', { unique: false });
+                }
               }
             }
           });
@@ -153,7 +356,7 @@ class DatabaseService {
           await opfs.init();
           
           this.initialized = true;
-          console.log('✅ Database service v7 initialized successfully');
+          console.log('✅ Database service v13 initialized successfully');
           return this.db;
         } catch (error) {
           console.error('❌ Failed to initialize database:', error);
@@ -172,13 +375,138 @@ class DatabaseService {
     return this.db;
   }
 
-  // ==================== GENERIC CRUD ====================
+  setCurrentUser(userId) {
+    this.currentUserId = userId;
+    console.log(`👤 Current user set to: ${userId}`);
+  }
+
+  getCurrentUser() {
+    return this.currentUserId;
+  }
+
+  setCurrentStore(storeId) {
+    this.currentStoreId = storeId;
+    localStorage.setItem('currentStoreId', storeId);
+    console.log(`📌 Current store set to: ${storeId}`);
+  }
+
+  getCurrentStore() {
+    return this.currentStoreId || localStorage.getItem('currentStoreId');
+  }
+
+  async getCurrentStoreObject() {
+    const storeId = this.getCurrentStore();
+    if (!storeId) return null;
+    
+    let store = await this.get('stores', storeId);
+    
+    if (!store) {
+      const allStores = await this.getAll('stores');
+      store = allStores.find(s => 
+        String(s._id) === storeId || 
+        String(s.cloudId) === storeId ||
+        String(s.id) === storeId
+      );
+    }
+    
+    return store;
+  }
+
+  async getValidStoreIdForApi() {
+    const store = await this.getCurrentStoreObject();
+    if (!store) return null;
+    
+    if (store._id && /^[0-9a-fA-F]{24}$/.test(store._id)) {
+      return store._id;
+    }
+    if (store.cloudId && /^[0-9a-fA-F]{24}$/.test(store.cloudId)) {
+      return store.cloudId;
+    }
+    return store.id;
+  }
+
+  // ==================== USER DATA MANAGEMENT ====================
+
+  async clearUserData(userId) {
+    const db = await this.ensureInitialized();
+    const stores = ['products', 'customers', 'transactions', 'syncQueue', 'stockHistory', 'returns', 'stores', 'transfers', 'settings'];
+    
+    console.log(`🧹 Clearing all data for user: ${userId}`);
+    
+    for (const storeName of stores) {
+      if (db.objectStoreNames.contains(storeName)) {
+        try {
+          const tx = db.transaction(storeName, 'readwrite');
+          const store = tx.objectStore(storeName);
+          
+          if (store.indexNames.contains('userId')) {
+            const index = store.index('userId');
+            const userItems = await index.getAll(userId);
+            
+            for (const item of userItems) {
+              await store.delete(item.id || item.key);
+            }
+            console.log(`✅ Cleared ${userItems.length} items from ${storeName} for user ${userId}`);
+          } else {
+            await store.clear();
+            console.log(`✅ Cleared all items from ${storeName}`);
+          }
+        } catch (error) {
+          console.warn(`Failed to clear ${storeName}:`, error);
+        }
+      }
+    }
+    
+    // Clear localStorage items
+    localStorage.removeItem('currentStoreId');
+    localStorage.removeItem('pos-settings');
+    localStorage.removeItem('pos-customers');
+    localStorage.removeItem('lastCloudSync');
+    localStorage.removeItem('activeStoreId');
+    
+    console.log(`✅ User ${userId} data cleared`);
+  }
+
+  async clearAllStores() {
+    const db = await this.ensureInitialized();
+    const stores = ['products', 'customers', 'transactions', 'syncQueue', 'stockHistory', 'returns', 'stores', 'transfers', 'settings'];
+    
+    for (const storeName of stores) {
+      if (db.objectStoreNames.contains(storeName)) {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        await store.clear();
+        console.log(`✅ Cleared ${storeName} store`);
+      }
+    }
+    
+    localStorage.removeItem('currentStoreId');
+    localStorage.removeItem('pos-settings');
+    localStorage.removeItem('pos-customers');
+    localStorage.removeItem('lastCloudSync');
+    localStorage.removeItem('activeStoreId');
+  }
+
+  // ==================== GENERIC CRUD WITH USER FILTERING ====================
 
   async getAll(storeName) {
     const db = await this.ensureInitialized();
     try {
+      if (!db.objectStoreNames.contains(storeName)) {
+        console.warn(`Store ${storeName} does not exist, returning empty array`);
+        return [];
+      }
+      
       const tx = db.transaction(storeName, 'readonly');
       const store = tx.objectStore(storeName);
+      
+      // Filter by current user if userId index exists
+      if (this.currentUserId && store.indexNames.contains('userId')) {
+        const index = store.index('userId');
+        const result = await index.getAll(this.currentUserId);
+        return result || [];
+      }
+      
       const result = await store.getAll();
       return result || [];
     } catch (error) {
@@ -187,17 +515,68 @@ class DatabaseService {
     }
   }
 
+  async getAllByStore(storeName, storeId) {
+    const db = await this.ensureInitialized();
+    try {
+      if (!db.objectStoreNames.contains(storeName)) {
+        console.warn(`Store ${storeName} does not exist`);
+        return [];
+      }
+      
+      const tx = db.transaction(storeName, 'readonly');
+      const store = tx.objectStore(storeName);
+      
+      let results = [];
+      
+      if (store.indexNames.contains('storeId')) {
+        const index = store.index('storeId');
+        results = await index.getAll(storeId);
+      } else {
+        const all = await store.getAll();
+        results = all.filter(item => String(item.storeId) === String(storeId));
+      }
+      
+      // Filter by current user if userId index exists
+      if (this.currentUserId && store.indexNames.contains('userId')) {
+        results = results.filter(item => String(item.userId) === String(this.currentUserId));
+      }
+      
+      return results || [];
+    } catch (error) {
+      console.error(`Error getting all from ${storeName} by store:`, error);
+      return [];
+    }
+  }
+
   async get(storeName, id) {
     const db = await this.ensureInitialized();
-    // Ensure id is a string for string key paths
+    if (!db.objectStoreNames.contains(storeName)) {
+      console.warn(`Store ${storeName} does not exist`);
+      return null;
+    }
+    
     const key = String(id);
-    return db.get(storeName, key);
+    const item = await db.get(storeName, key);
+    
+    // Verify user ownership if userId exists
+    if (item && this.currentUserId && item.userId && String(item.userId) !== String(this.currentUserId)) {
+      console.warn(`Access denied: ${storeName} item ${id} belongs to different user`);
+      return null;
+    }
+    
+    return item;
   }
 
   async add(storeName, data) {
     const db = await this.ensureInitialized();
     const id = data.id || `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const item = { ...data, id: String(id), createdAt: new Date().toISOString() };
+    const item = { 
+      ...data, 
+      id: String(id), 
+      createdAt: new Date().toISOString(),
+      storeId: data.storeId || this.currentStoreId,
+      userId: data.userId || this.currentUserId
+    };
     await db.add(storeName, item);
     return id;
   }
@@ -205,17 +584,35 @@ class DatabaseService {
   async put(storeName, data) {
     const db = await this.ensureInitialized();
     
+    // Ensure userId is set
+    if (!data.userId && this.currentUserId) {
+      data.userId = this.currentUserId;
+    }
+    
     if (storeName === 'customers') {
       return this._saveCustomer(db, data);
     } else if (storeName === 'transactions') {
       return this._saveTransaction(db, data);
     } else if (storeName === 'products') {
       return this._saveProduct(db, data);
+    } else if (storeName === 'stockHistory') {
+      return this._saveStockHistory(db, data);
+    } else if (storeName === 'returns') {
+      return this._saveReturn(db, data);
+    } else if (storeName === 'stores') {
+      return this._saveStore(db, data);
+    } else if (storeName === 'transfers') {
+      return this._saveTransfer(db, data);
     }
     
     const item = { ...data, updatedAt: new Date().toISOString() };
-    // Ensure id is a string
     if (item.id) item.id = String(item.id);
+    if (!item.storeId && this.currentStoreId) {
+      item.storeId = this.currentStoreId;
+    }
+    if (!item.userId && this.currentUserId) {
+      item.userId = this.currentUserId;
+    }
     await db.put(storeName, item);
     return item.id;
   }
@@ -234,7 +631,6 @@ class DatabaseService {
     if (!customerData.id) {
       customerData.id = `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
-    // Ensure id is a string
     customerData.id = String(customerData.id);
     
     const now = new Date().toISOString();
@@ -242,11 +638,19 @@ class DatabaseService {
     if (!customerData.createdAt) {
       customerData.createdAt = now;
     }
+    if (!customerData.storeId && this.currentStoreId) {
+      customerData.storeId = this.currentStoreId;
+    }
+    if (!customerData.userId && this.currentUserId) {
+      customerData.userId = this.currentUserId;
+    }
     
     console.log('📝 Saving customer:', {
       id: customerData.id,
       name: customerData.name,
       email: customerData.email || 'no-email',
+      storeId: customerData.storeId,
+      userId: customerData.userId,
       cloudId: customerData.cloudId || customerData._id
     });
     
@@ -264,7 +668,6 @@ class DatabaseService {
     if (!transactionData.id) {
       transactionData.id = `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
-    // Ensure id is a string
     transactionData.id = String(transactionData.id);
     
     if (transactionData.isCredit || transactionData.isInstallment) {
@@ -288,6 +691,17 @@ class DatabaseService {
       transactionData.fullyPaid = true;
     }
     
+    if (!transactionData.returnedItems) {
+      transactionData.returnedItems = [];
+    }
+    
+    if (!transactionData.storeId && this.currentStoreId) {
+      transactionData.storeId = this.currentStoreId;
+    }
+    if (!transactionData.userId && this.currentUserId) {
+      transactionData.userId = this.currentUserId;
+    }
+    
     const now = new Date().toISOString();
     transactionData.updatedAt = now;
     if (!transactionData.createdAt) {
@@ -300,7 +714,11 @@ class DatabaseService {
       customer: transactionData.customer?.name,
       total: transactionData.total,
       remaining: transactionData.remaining,
+      storeId: transactionData.storeId,
+      userId: transactionData.userId,
       isCredit: transactionData.isCredit,
+      isInstallment: transactionData.isInstallment,
+      returnedItemsCount: transactionData.returnedItems?.length || 0,
       cloudId: transactionData.cloudId
     });
     
@@ -314,8 +732,14 @@ class DatabaseService {
     if (!productData.id) {
       productData.id = `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
-    // Ensure id is a string
     productData.id = String(productData.id);
+    
+    if (!productData.storeId && this.currentStoreId) {
+      productData.storeId = this.currentStoreId;
+    }
+    if (!productData.userId && this.currentUserId) {
+      productData.userId = this.currentUserId;
+    }
     
     const now = new Date().toISOString();
     productData.updatedAt = now;
@@ -327,6 +751,8 @@ class DatabaseService {
       id: productData.id,
       name: productData.name,
       sku: productData.sku,
+      storeId: productData.storeId,
+      userId: productData.userId,
       cloudId: productData.cloudId
     });
     
@@ -334,13 +760,182 @@ class DatabaseService {
     return productData.id;
   }
 
+  async _saveStockHistory(db, data) {
+    const historyData = { ...data };
+    
+    if (!historyData.id) {
+      historyData.id = `sh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    historyData.id = String(historyData.id);
+    
+    if (!historyData.createdAt) {
+      historyData.createdAt = new Date().toISOString();
+    }
+    if (!historyData.storeId && this.currentStoreId) {
+      historyData.storeId = this.currentStoreId;
+    }
+    if (!historyData.userId && this.currentUserId) {
+      historyData.userId = this.currentUserId;
+    }
+    
+    console.log('📝 Saving stock history:', {
+      id: historyData.id,
+      productName: historyData.productName,
+      adjustmentType: historyData.adjustmentType,
+      quantityChange: historyData.quantityChange,
+      storeId: historyData.storeId,
+      userId: historyData.userId
+    });
+    
+    await db.put('stockHistory', historyData);
+    return historyData.id;
+  }
+
+  async _saveReturn(db, data) {
+    const returnData = { ...data };
+    
+    if (!returnData.id) {
+      returnData.id = `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    returnData.id = String(returnData.id);
+    
+    if (!returnData.createdAt) {
+      returnData.createdAt = new Date().toISOString();
+    }
+    
+    if (!returnData.synced) {
+      returnData.synced = false;
+    }
+    
+    if (!returnData.returnType && returnData.type) {
+      returnData.returnType = returnData.type;
+    }
+    
+    if (!returnData.storeId && this.currentStoreId) {
+      returnData.storeId = this.currentStoreId;
+    }
+    if (!returnData.userId && this.currentUserId) {
+      returnData.userId = this.currentUserId;
+    }
+    
+    console.log('📝 Saving return record:', {
+      id: returnData.id,
+      originalTransactionId: returnData.originalTransactionId,
+      originalReceiptNumber: returnData.originalReceiptNumber,
+      returnType: returnData.returnType,
+      condition: returnData.condition,
+      totalRefund: returnData.totalRefund,
+      storeId: returnData.storeId,
+      userId: returnData.userId
+    });
+    
+    await db.put('returns', returnData);
+    return returnData.id;
+  }
+
+  async _saveStore(db, data) {
+    const storeData = { ...data };
+    
+    if (data._id && /^[0-9a-fA-F]{24}$/.test(data._id)) {
+      storeData.id = data._id;
+      storeData._id = data._id;
+      storeData.cloudId = data._id;
+      console.log('📌 Using MongoDB _id as store ID:', data._id);
+    } else if (data.cloudId && /^[0-9a-fA-F]{24}$/.test(data.cloudId)) {
+      storeData.id = data.cloudId;
+      storeData._id = data.cloudId;
+      storeData.cloudId = data.cloudId;
+      console.log('📌 Using cloudId as store ID:', data.cloudId);
+    } else if (!storeData.id) {
+      storeData.id = `store_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      console.log('⚠️ Creating temporary local store ID:', storeData.id);
+    }
+    
+    storeData.id = String(storeData.id);
+    
+    if (!storeData.createdAt) {
+      storeData.createdAt = new Date().toISOString();
+    }
+    storeData.updatedAt = new Date().toISOString();
+    
+    if (!storeData.userId && this.currentUserId) {
+      storeData.userId = this.currentUserId;
+    }
+    
+    if (data._id) {
+      storeData._id = data._id;
+    }
+    if (data.cloudId) {
+      storeData.cloudId = data.cloudId;
+    }
+    
+    console.log('📝 Saving store:', {
+      id: storeData.id,
+      _id: storeData._id,
+      name: storeData.name,
+      isDefault: storeData.isDefault,
+      userId: storeData.userId
+    });
+    
+    await db.put('stores', storeData);
+    return storeData.id;
+  }
+
+  async _saveTransfer(db, data) {
+    const transferData = { ...data };
+    
+    if (!transferData.id) {
+      transferData.id = `transfer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    transferData.id = String(transferData.id);
+    
+    if (!transferData.createdAt) {
+      transferData.createdAt = new Date().toISOString();
+    }
+    if (!transferData.storeId && this.currentStoreId) {
+      transferData.storeId = this.currentStoreId;
+    }
+    if (!transferData.userId && this.currentUserId) {
+      transferData.userId = this.currentUserId;
+    }
+    
+    console.log('📝 Saving transfer:', {
+      id: transferData.id,
+      fromStore: transferData.fromStore,
+      toStore: transferData.toStore,
+      product: transferData.product,
+      quantity: transferData.quantity,
+      status: transferData.status,
+      storeId: transferData.storeId,
+      userId: transferData.userId
+    });
+    
+    await db.put('transfers', transferData);
+    return transferData.id;
+  }
+
   async delete(storeName, id) {
     const db = await this.ensureInitialized();
+    if (!db.objectStoreNames.contains(storeName)) {
+      console.warn(`Store ${storeName} does not exist`);
+      return;
+    }
+    
+    const item = await this.get(storeName, id);
+    if (item && this.currentUserId && item.userId && String(item.userId) !== String(this.currentUserId)) {
+      console.warn(`Cannot delete ${storeName} item ${id}: belongs to different user`);
+      return;
+    }
+    
     await db.delete(storeName, String(id));
   }
 
   async query(storeName, indexName, value) {
     const db = await this.ensureInitialized();
+    if (!db.objectStoreNames.contains(storeName)) {
+      console.warn(`Store ${storeName} does not exist`);
+      return [];
+    }
     const tx = db.transaction(storeName, 'readonly');
     const store = tx.objectStore(storeName);
     
@@ -350,11 +945,21 @@ class DatabaseService {
     }
     
     const index = store.index(indexName);
-    return index.getAll(value);
+    let results = await index.getAll(value);
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      results = results.filter(item => String(item.userId) === String(this.currentUserId));
+    }
+    
+    return results;
   }
 
   async queryRange(storeName, indexName, lower, upper, lowerOpen = false, upperOpen = false) {
     const db = await this.ensureInitialized();
+    if (!db.objectStoreNames.contains(storeName)) {
+      console.warn(`Store ${storeName} does not exist`);
+      return [];
+    }
     const tx = db.transaction(storeName, 'readonly');
     const store = tx.objectStore(storeName);
     
@@ -365,44 +970,67 @@ class DatabaseService {
     
     const index = store.index(indexName);
     const range = IDBKeyRange.bound(lower, upper, lowerOpen, upperOpen);
-    return index.getAll(range);
+    let results = await index.getAll(range);
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      results = results.filter(item => String(item.userId) === String(this.currentUserId));
+    }
+    
+    return results;
   }
 
   // ==================== PRODUCT METHODS ====================
 
   async saveProduct(product) {
+    if (!product.userId && this.currentUserId) {
+      product.userId = this.currentUserId;
+    }
     return this.put('products', product);
   }
 
   async getProduct(id) {
-    return this.get('products', String(id));
+    const product = await this.get('products', String(id));
+    if (product && this.currentStoreId && product.storeId !== this.currentStoreId) {
+      console.warn(`Product ${id} belongs to different store, access denied`);
+      return null;
+    }
+    if (product && this.currentUserId && product.userId !== this.currentUserId) {
+      console.warn(`Product ${id} belongs to different user, access denied`);
+      return null;
+    }
+    return product;
   }
 
   async getProducts() {
+    if (this.currentStoreId) {
+      return this.getAllByStore('products', this.currentStoreId);
+    }
     return this.getAll('products');
   }
 
   async getProductsByCategory(category) {
-    return this.query('products', 'category', category);
+    const products = await this.getProducts();
+    return products.filter(p => p.category === category);
   }
 
   async getProductBySku(sku) {
-    const results = await this.query('products', 'sku', sku);
-    return results[0] || null;
+    const products = await this.getProducts();
+    return products.find(p => p.sku === sku) || null;
   }
 
   async getUnsyncedProducts() {
-    return this.query('products', 'synced', false);
+    const products = await this.getProducts();
+    return products.filter(p => !p.synced);
   }
 
   async markProductSynced(id, cloudId) {
-    const product = await this.get('products', String(id));
+    const product = await this.getProduct(id);
     if (product) {
       product.synced = true;
       product.cloudId = cloudId;
       product.syncRequired = false;
       product.lastSyncedAt = new Date().toISOString();
-      await this.put('products', product);
+      await this.saveProduct(product);
     }
   }
 
@@ -413,73 +1041,85 @@ class DatabaseService {
   // ==================== CUSTOMER METHODS ====================
 
   async saveCustomer(customer) {
+    if (!customer.userId && this.currentUserId) {
+      customer.userId = this.currentUserId;
+    }
     return this.put('customers', customer);
   }
 
   async getCustomers() {
+    if (this.currentStoreId) {
+      return this.getAllByStore('customers', this.currentStoreId);
+    }
     return this.getAll('customers');
   }
 
   async getCustomer(id) {
-    return this.get('customers', String(id));
+    const customer = await this.get('customers', String(id));
+    if (customer && this.currentStoreId && customer.storeId !== this.currentStoreId) {
+      console.warn(`Customer ${id} belongs to different store, access denied`);
+      return null;
+    }
+    if (customer && this.currentUserId && customer.userId !== this.currentUserId) {
+      console.warn(`Customer ${id} belongs to different user, access denied`);
+      return null;
+    }
+    return customer;
   }
 
   async getCustomerByEmail(email) {
     if (!email) return null;
-    try {
-      const customers = await this.query('customers', 'email', email);
-      return customers[0] || null;
-    } catch (error) {
-      console.warn('Error querying by email:', error);
-      return null;
-    }
+    const customers = await this.getCustomers();
+    return customers.find(c => c.email === email) || null;
   }
 
   async getCustomerByPhone(phone) {
     if (!phone) return null;
-    try {
-      const customers = await this.query('customers', 'phone', phone);
-      return customers[0] || null;
-    } catch (error) {
-      console.warn('Error querying by phone:', error);
-      return null;
-    }
+    const customers = await this.getCustomers();
+    return customers.find(c => c.phone === phone) || null;
   }
 
   async getCustomerByCloudId(cloudId) {
     if (!cloudId) return null;
-    try {
-      const customers = await this.query('customers', 'cloudId', cloudId);
-      return customers[0] || null;
-    } catch (error) {
-      console.warn('Error querying by cloudId:', error);
-      return null;
-    }
+    const customers = await this.getCustomers();
+    return customers.find(c => c.cloudId === cloudId || c._id === cloudId) || null;
   }
 
   async getUnsyncedCustomers() {
-    return this.query('customers', 'synced', false);
+    const customers = await this.getCustomers();
+    return customers.filter(c => !c.synced);
   }
 
   async markCustomerSynced(id, cloudId) {
-    const customer = await this.get('customers', String(id));
+    const customer = await this.getCustomer(id);
     if (customer) {
       customer.synced = true;
       customer.cloudId = cloudId;
       customer.syncRequired = false;
       customer.lastSyncedAt = new Date().toISOString();
-      await this.put('customers', customer);
+      await this.saveCustomer(customer);
     }
   }
 
   // ==================== TRANSACTION METHODS ====================
 
   async saveTransaction(transaction) {
+    if (!transaction.userId && this.currentUserId) {
+      transaction.userId = this.currentUserId;
+    }
     return this.put('transactions', transaction);
   }
 
   async getTransaction(id) {
     const transaction = await this.get('transactions', String(id));
+    if (transaction && this.currentStoreId && transaction.storeId !== this.currentStoreId) {
+      console.warn(`Transaction ${id} belongs to different store, access denied`);
+      return null;
+    }
+    if (transaction && this.currentUserId && transaction.userId !== this.currentUserId) {
+      console.warn(`Transaction ${id} belongs to different user, access denied`);
+      return null;
+    }
     if (transaction) {
       transaction.paymentProgress = transaction.total ? ((transaction.paid || 0) / transaction.total) * 100 : 0;
       transaction.isOverdue = this._isOverdue(transaction);
@@ -488,58 +1128,46 @@ class DatabaseService {
   }
 
   async getTransactions() {
-    const transactions = await this.getAll('transactions');
-    return transactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    if (this.currentStoreId) {
+      return this.getAllByStore('transactions', this.currentStoreId);
+    }
+    return this.getAll('transactions');
   }
 
   async getTransactionsByDateRange(startDate, endDate) {
-    try {
-      return await this.queryRange('transactions', 'createdAt', startDate, endDate);
-    } catch (error) {
-      console.warn('Error using date range index, falling back to filter:', error);
-      const all = await this.getAll('transactions');
-      return all.filter(t => {
-        const date = new Date(t.createdAt || t.timestamp);
-        return date >= new Date(startDate) && date <= new Date(endDate);
-      });
-    }
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => {
+      const date = new Date(t.createdAt || t.timestamp);
+      return date >= new Date(startDate) && date <= new Date(endDate);
+    });
   }
 
   async getTransactionsByCustomer(customerId) {
-    try {
-      const customerIdStr = String(customerId);
-      const byLocalId = await this.query('transactions', 'customerId', customerIdStr);
-      const byCloudId = await this.query('transactions', 'customerCloudId', customerIdStr);
-      
-      const all = [...byLocalId, ...byCloudId];
-      const unique = Array.from(new Map(all.map(t => [t.id, t])).values());
-      
-      return unique.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    } catch (error) {
-      console.warn('Error using customer index, falling back to filter:', error);
-      const all = await this.getAll('transactions');
-      const customerIdStr = String(customerId);
-      return all.filter(t => 
-        String(t.customer?.id) === customerIdStr || String(t.customer?._id) === customerIdStr
-      ).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    }
+    const transactions = await this.getTransactions();
+    const customerIdStr = String(customerId);
+    return transactions.filter(t => 
+      String(t.customer?.id) === customerIdStr || String(t.customer?._id) === customerIdStr
+    ).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }
 
   async getTransactionsByPaymentMethod(paymentMethod) {
-    return this.query('transactions', 'paymentMethod', paymentMethod);
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => t.paymentMethod === paymentMethod);
   }
 
   async getCreditTransactions() {
-    return this.query('transactions', 'isCredit', true);
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => t.isCredit);
   }
 
   async getInstallmentTransactions() {
-    return this.query('transactions', 'isInstallment', true);
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => t.isInstallment);
   }
 
   async getPendingPayments() {
-    const all = await this.getAll('transactions');
-    return all.filter(t => 
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => 
       (t.isCredit || t.isInstallment) && 
       !t.fullyPaid && 
       (t.remaining || 0) > 0
@@ -551,22 +1179,23 @@ class DatabaseService {
   }
 
   async getOverdueTransactions() {
-    const all = await this.getAll('transactions');
-    return all.filter(t => this._isOverdue(t));
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => this._isOverdue(t));
   }
 
   async getUnsyncedTransactions() {
-    return this.query('transactions', 'synced', false);
+    const transactions = await this.getTransactions();
+    return transactions.filter(t => !t.synced);
   }
 
   async markTransactionSynced(id, cloudId) {
-    const transaction = await this.get('transactions', String(id));
+    const transaction = await this.getTransaction(id);
     if (transaction) {
       transaction.synced = true;
       transaction.cloudId = cloudId;
       transaction.syncRequired = false;
       transaction.lastSyncedAt = new Date().toISOString();
-      await this.put('transactions', transaction);
+      await this.saveTransaction(transaction);
       console.log(`✅ Transaction ${id} marked as synced with cloud ID: ${cloudId}`);
     }
   }
@@ -610,12 +1239,400 @@ class DatabaseService {
     return new Date(transaction.dueDate) < new Date();
   }
 
-  // ==================== SYNC QUEUE METHODS (FIXED) ====================
+  // ==================== STOCK HISTORY METHODS ====================
+
+  async addToStockHistory(historyData) {
+    if (!historyData.userId && this.currentUserId) {
+      historyData.userId = this.currentUserId;
+    }
+    return this.put('stockHistory', historyData);
+  }
+
+  async getStockHistory(productId) {
+    const history = await this.getStockHistoryByStore();
+    const productIdStr = String(productId);
+    return history.filter(h => 
+      String(h.productId) === productIdStr || h.productId === productIdStr
+    ).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  async getStockHistoryByStore() {
+    if (this.currentStoreId) {
+      return this.getAllByStore('stockHistory', this.currentStoreId);
+    }
+    return this.getAll('stockHistory');
+  }
+
+  async getStockHistoryByType(productId, adjustmentType) {
+    const history = await this.getStockHistory(productId);
+    return history.filter(h => h.adjustmentType === adjustmentType);
+  }
+
+  async updateStockHistory(id, updates) {
+    const db = await this.ensureInitialized();
+    const history = await db.get('stockHistory', String(id));
+    if (history) {
+      if (this.currentUserId && history.userId !== this.currentUserId) {
+        console.warn(`Cannot update stock history ${id}: belongs to different user`);
+        return false;
+      }
+      Object.assign(history, updates);
+      await db.put('stockHistory', history);
+      return true;
+    }
+    return false;
+  }
+
+  async deleteStockHistory(id) {
+    return this.delete('stockHistory', String(id));
+  }
+
+  async clearStockHistory() {
+    const db = await this.ensureInitialized();
+    const tx = db.transaction('stockHistory', 'readwrite');
+    const store = tx.objectStore('stockHistory');
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      const index = store.index('userId');
+      const userItems = await index.getAll(this.currentUserId);
+      for (const item of userItems) {
+        await store.delete(item.id);
+      }
+      console.log(`✅ Cleared ${userItems.length} stock history items for user ${this.currentUserId}`);
+    } else {
+      await store.clear();
+      console.log('✅ Stock history cleared');
+    }
+  }
+
+  async getStockHistoryStats() {
+    const all = await this.getStockHistoryByStore();
+    const stats = {
+      total: all.length,
+      byType: {},
+      byProduct: {},
+      totalAdded: 0,
+      totalRemoved: 0
+    };
+    
+    for (const record of all) {
+      stats.byType[record.adjustmentType] = (stats.byType[record.adjustmentType] || 0) + 1;
+      stats.byProduct[record.productName] = (stats.byProduct[record.productName] || 0) + 1;
+      
+      if (record.quantityChange > 0) {
+        stats.totalAdded += record.quantityChange;
+      } else {
+        stats.totalRemoved += Math.abs(record.quantityChange);
+      }
+    }
+    
+    return stats;
+  }
+
+  // ==================== RETURNS METHODS ====================
+
+  async saveReturn(returnData) {
+    if (!returnData.userId && this.currentUserId) {
+      returnData.userId = this.currentUserId;
+    }
+    return this.put('returns', returnData);
+  }
+
+  async getReturn(id) {
+    const returnRecord = await this.get('returns', String(id));
+    if (returnRecord && this.currentStoreId && returnRecord.storeId !== this.currentStoreId) {
+      console.warn(`Return ${id} belongs to different store, access denied`);
+      return null;
+    }
+    if (returnRecord && this.currentUserId && returnRecord.userId !== this.currentUserId) {
+      console.warn(`Return ${id} belongs to different user, access denied`);
+      return null;
+    }
+    return returnRecord;
+  }
+
+  async getAllReturns() {
+    if (this.currentStoreId) {
+      return this.getAllByStore('returns', this.currentStoreId);
+    }
+    return this.getAll('returns');
+  }
+
+  async getReturnsByOriginalTransaction(transactionId) {
+    const returns = await this.getAllReturns();
+    return returns.filter(r => String(r.originalTransactionId) === String(transactionId));
+  }
+
+  async getReturnsByOriginalReceipt(receiptNumber) {
+    const returns = await this.getAllReturns();
+    return returns.filter(r => r.originalReceiptNumber === receiptNumber);
+  }
+
+  async getReturnsByType(returnType) {
+    const returns = await this.getAllReturns();
+    return returns.filter(r => r.returnType === returnType);
+  }
+
+  async getReturnsByCondition(condition) {
+    const returns = await this.getAllReturns();
+    return returns.filter(r => r.condition === condition);
+  }
+
+  async getReturnsByCustomer(customerId) {
+    const returns = await this.getAllReturns();
+    return returns.filter(r => String(r.customer?.id) === String(customerId));
+  }
+
+  async getUnsyncedReturns() {
+    const returns = await this.getAllReturns();
+    return returns.filter(r => !r.synced);
+  }
+
+  async markReturnSynced(id, cloudId) {
+    const returnRecord = await this.getReturn(id);
+    if (returnRecord) {
+      returnRecord.synced = true;
+      returnRecord.cloudId = cloudId;
+      returnRecord.lastSyncedAt = new Date().toISOString();
+      await this.saveReturn(returnRecord);
+      console.log(`✅ Return ${id} marked as synced with cloud ID: ${cloudId}`);
+    }
+  }
+
+  async deleteReturn(id) {
+    return this.delete('returns', String(id));
+  }
+
+  async clearReturns() {
+    const db = await this.ensureInitialized();
+    const tx = db.transaction('returns', 'readwrite');
+    const store = tx.objectStore('returns');
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      const index = store.index('userId');
+      const userItems = await index.getAll(this.currentUserId);
+      for (const item of userItems) {
+        await store.delete(item.id);
+      }
+      console.log(`✅ Cleared ${userItems.length} returns for user ${this.currentUserId}`);
+    } else {
+      await store.clear();
+      console.log('✅ Returns store cleared');
+    }
+  }
+
+  async getReturnsStats() {
+    const all = await this.getAllReturns();
+    const stats = {
+      total: all.length,
+      byType: {},
+      byCondition: {},
+      totalRefundAmount: 0,
+      totalItemsReturned: 0
+    };
+    
+    for (const returnRecord of all) {
+      stats.byType[returnRecord.returnType] = (stats.byType[returnRecord.returnType] || 0) + 1;
+      stats.byCondition[returnRecord.condition] = (stats.byCondition[returnRecord.condition] || 0) + 1;
+      stats.totalRefundAmount += returnRecord.totalRefund || 0;
+      
+      if (returnRecord.items) {
+        stats.totalItemsReturned += returnRecord.items.reduce((sum, item) => sum + (item.quantity || 0), 0);
+      }
+    }
+    
+    return stats;
+  }
+
+  // ==================== STORES METHODS ====================
+
+  async saveStore(store) {
+    if (!store.userId && this.currentUserId) {
+      store.userId = this.currentUserId;
+    }
+    return this.put('stores', store);
+  }
+
+  async getStore(id) {
+    const store = await this.get('stores', String(id));
+    if (store && this.currentUserId && store.userId !== this.currentUserId) {
+      console.warn(`Store ${id} belongs to different user, access denied`);
+      return null;
+    }
+    return store;
+  }
+
+  async getAllStores() {
+    const stores = await this.getAll('stores');
+    // Filter by current user if userId exists
+    if (this.currentUserId) {
+      return stores.filter(s => String(s.userId) === String(this.currentUserId));
+    }
+    return stores;
+  }
+
+  async getStoresByCity(city) {
+    const stores = await this.getAllStores();
+    return stores.filter(s => s.city === city);
+  }
+
+  async getStoresByState(state) {
+    const stores = await this.getAllStores();
+    return stores.filter(s => s.state === state);
+  }
+
+  async getOpenStores() {
+    const stores = await this.getAllStores();
+    return stores.filter(s => s.open === true);
+  }
+
+  async getDefaultStore() {
+    const stores = await this.getAllStores();
+    return stores.find(s => s.isDefault === true) || stores[0] || null;
+  }
+
+  async deleteStore(id) {
+    return this.delete('stores', String(id));
+  }
+
+  async clearStores() {
+    const db = await this.ensureInitialized();
+    const tx = db.transaction('stores', 'readwrite');
+    const store = tx.objectStore('stores');
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      const index = store.index('userId');
+      const userItems = await index.getAll(this.currentUserId);
+      for (const item of userItems) {
+        await store.delete(item.id);
+      }
+      console.log(`✅ Cleared ${userItems.length} stores for user ${this.currentUserId}`);
+    } else {
+      await store.clear();
+      console.log('✅ Stores store cleared');
+    }
+  }
+
+  // ==================== TRANSFERS METHODS ====================
+
+  async saveTransfer(transfer) {
+    if (!transfer.userId && this.currentUserId) {
+      transfer.userId = this.currentUserId;
+    }
+    return this.put('transfers', transfer);
+  }
+
+  async getTransfer(id) {
+    const transfer = await this.get('transfers', String(id));
+    if (transfer && this.currentStoreId && transfer.storeId !== this.currentStoreId) {
+      console.warn(`Transfer ${id} belongs to different store, access denied`);
+      return null;
+    }
+    if (transfer && this.currentUserId && transfer.userId !== this.currentUserId) {
+      console.warn(`Transfer ${id} belongs to different user, access denied`);
+      return null;
+    }
+    return transfer;
+  }
+
+  async getAllTransfers() {
+    if (this.currentStoreId) {
+      return this.getAllByStore('transfers', this.currentStoreId);
+    }
+    return this.getAll('transfers');
+  }
+
+  async getTransfersByFromStore(storeId) {
+    const transfers = await this.getAllTransfers();
+    return transfers.filter(t => String(t.fromStoreId) === String(storeId));
+  }
+
+  async getTransfersByToStore(storeId) {
+    const transfers = await this.getAllTransfers();
+    return transfers.filter(t => String(t.toStoreId) === String(storeId));
+  }
+
+  async getTransfersByProduct(productId) {
+    const transfers = await this.getAllTransfers();
+    return transfers.filter(t => String(t.productId) === String(productId));
+  }
+
+  async getTransfersByStatus(status) {
+    const transfers = await this.getAllTransfers();
+    return transfers.filter(t => t.status === status);
+  }
+
+  async getPendingTransfers() {
+    return this.getTransfersByStatus('pending');
+  }
+
+  async getInTransitTransfers() {
+    return this.getTransfersByStatus('in-transit');
+  }
+
+  async getCompletedTransfers() {
+    return this.getTransfersByStatus('completed');
+  }
+
+  async deleteTransfer(id) {
+    return this.delete('transfers', String(id));
+  }
+
+  async clearTransfers() {
+    const db = await this.ensureInitialized();
+    const tx = db.transaction('transfers', 'readwrite');
+    const store = tx.objectStore('transfers');
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      const index = store.index('userId');
+      const userItems = await index.getAll(this.currentUserId);
+      for (const item of userItems) {
+        await store.delete(item.id);
+      }
+      console.log(`✅ Cleared ${userItems.length} transfers for user ${this.currentUserId}`);
+    } else {
+      await store.clear();
+      console.log('✅ Transfers store cleared');
+    }
+  }
+
+  async getTransfersStats() {
+    const all = await this.getAllTransfers();
+    const stats = {
+      total: all.length,
+      byStatus: {},
+      totalItemsTransferred: 0,
+      pendingCount: 0,
+      inTransitCount: 0,
+      completedCount: 0,
+      cancelledCount: 0
+    };
+    
+    for (const transfer of all) {
+      stats.byStatus[transfer.status] = (stats.byStatus[transfer.status] || 0) + 1;
+      stats.totalItemsTransferred += transfer.quantity || 0;
+      
+      switch(transfer.status) {
+        case 'pending': stats.pendingCount++; break;
+        case 'in-transit': stats.inTransitCount++; break;
+        case 'completed': stats.completedCount++; break;
+        case 'cancelled': stats.cancelledCount++; break;
+      }
+    }
+    
+    return stats;
+  }
+
+  // ==================== SYNC QUEUE METHODS ====================
 
   async addToSyncQueue(item) {
     const db = await this.ensureInitialized();
     
-    // Check if already in queue using indexes
+    // Add userId to queue item
+    if (this.currentUserId && !item.userId) {
+      item.userId = this.currentUserId;
+    }
+    
     let existing = null;
     if (item.transactionId) {
       const existingItems = await this.query('syncQueue', 'transactionId', item.transactionId);
@@ -626,7 +1643,26 @@ class DatabaseService {
     } else if (item.productId) {
       const existingItems = await this.query('syncQueue', 'productId', item.productId);
       existing = existingItems.find(i => i.type === item.type);
+    } else if (item.returnId) {
+      const existingItems = await this.query('syncQueue', 'returnId', item.returnId);
+      existing = existingItems.find(i => i.type === item.type);
     }
+    
+    const queueItem = {
+      type: item.type,
+      timestamp: new Date().toISOString(),
+      retryCount: 0,
+      status: 'pending',
+      lastAttempt: null,
+      error: null,
+      storeId: this.currentStoreId,
+      userId: this.currentUserId
+    };
+    
+    if (item.transactionId) queueItem.transactionId = String(item.transactionId);
+    if (item.customerId) queueItem.customerId = String(item.customerId);
+    if (item.productId) queueItem.productId = String(item.productId);
+    if (item.returnId) queueItem.returnId = String(item.returnId);
     
     if (existing) {
       console.log(`⚠️ Item already in sync queue, updating retry count`);
@@ -638,28 +1674,15 @@ class DatabaseService {
       return existing.id;
     }
     
-    // CRITICAL FIX: Do NOT include an 'id' field - let auto-increment handle it
-    const queueItem = {
-      type: item.type,
-      timestamp: new Date().toISOString(),
-      retryCount: 0,
-      status: 'pending',
-      lastAttempt: null,
-      error: null
-    };
-    
-    // Add the appropriate reference ID
-    if (item.transactionId) queueItem.transactionId = String(item.transactionId);
-    if (item.customerId) queueItem.customerId = String(item.customerId);
-    if (item.productId) queueItem.productId = String(item.productId);
-    
-    // Use add() not put() for auto-increment stores
     const id = await db.add('syncQueue', queueItem);
     console.log(`📋 Added to sync queue: ${item.type} with id ${id}`);
     return id;
   }
 
   async getSyncQueue() {
+    if (this.currentStoreId) {
+      return this.getAllByStore('syncQueue', this.currentStoreId);
+    }
     return this.getAll('syncQueue');
   }
 
@@ -670,7 +1693,8 @@ class DatabaseService {
       item.type === type && 
       (String(item.transactionId) === refIdStr || 
        String(item.customerId) === refIdStr || 
-       String(item.productId) === refIdStr)
+       String(item.productId) === refIdStr ||
+       String(item.returnId) === refIdStr)
     );
   }
 
@@ -683,6 +1707,10 @@ class DatabaseService {
     const db = await this.ensureInitialized();
     const item = await db.get('syncQueue', id);
     if (item) {
+      if (this.currentUserId && item.userId !== this.currentUserId) {
+        console.warn(`Cannot update sync queue item ${id}: belongs to different user`);
+        return;
+      }
       Object.assign(item, updates);
       await db.put('syncQueue', item);
     }
@@ -696,50 +1724,58 @@ class DatabaseService {
     const db = await this.ensureInitialized();
     const tx = db.transaction('syncQueue', 'readwrite');
     const store = tx.objectStore('syncQueue');
-    await store.clear();
-    console.log('✅ Sync queue cleared');
+    
+    if (this.currentUserId && store.indexNames.contains('userId')) {
+      const index = store.index('userId');
+      const userItems = await index.getAll(this.currentUserId);
+      for (const item of userItems) {
+        await store.delete(item.id);
+      }
+      console.log(`✅ Cleared ${userItems.length} sync queue items for user ${this.currentUserId}`);
+    } else {
+      await store.clear();
+      console.log('✅ Sync queue cleared');
+    }
   }
 
   // ==================== SETTINGS METHODS ====================
 
   async getSetting(key) {
     const db = await this.ensureInitialized();
-    const setting = await db.get('settings', key);
+    let setting;
+    
+    if (this.currentUserId) {
+      const index = db.transaction('settings').objectStore('settings').index('userId');
+      const settings = await index.getAll(this.currentUserId);
+      setting = settings.find(s => s.key === key);
+    } else {
+      setting = await db.get('settings', key);
+    }
+    
     return setting ? setting.value : null;
   }
 
   async setSetting(key, value) {
     const db = await this.ensureInitialized();
-    await db.put('settings', { key, value, updatedAt: new Date().toISOString() });
+    await db.put('settings', { 
+      key, 
+      value, 
+      userId: this.currentUserId,
+      updatedAt: new Date().toISOString() 
+    });
   }
 
   // ==================== UTILITY METHODS ====================
-
-  async clearAllStores() {
-    const db = await this.ensureInitialized();
-    const stores = ['products', 'customers', 'transactions', 'syncQueue'];
-    
-    for (const storeName of stores) {
-      if (db.objectStoreNames.contains(storeName)) {
-        const tx = db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        await store.clear();
-        console.log(`✅ Cleared ${storeName} store`);
-      }
-    }
-  }
 
   async getDatabaseStats() {
     const db = await this.ensureInitialized();
     const stats = {};
     
-    const stores = ['products', 'customers', 'transactions', 'syncQueue'];
+    const stores = ['products', 'customers', 'transactions', 'syncQueue', 'stockHistory', 'returns', 'stores', 'transfers'];
     
     for (const storeName of stores) {
       if (db.objectStoreNames.contains(storeName)) {
-        const tx = db.transaction(storeName, 'readonly');
-        const store = tx.objectStore(storeName);
-        const all = await store.getAll();
+        const all = await this.getAllByStore(storeName, this.currentStoreId) || [];
         
         if (storeName === 'transactions') {
           const creditCount = all.filter(t => t.isCredit).length;
@@ -757,6 +1793,45 @@ class DatabaseService {
             totalRevenue: all.reduce((sum, t) => sum + t.total, 0),
             totalOutstanding: all.filter(t => !t.fullyPaid).reduce((sum, t) => sum + (t.remaining || 0), 0)
           };
+        } else if (storeName === 'stockHistory') {
+          stats[storeName] = {
+            count: all.length,
+            size: JSON.stringify(all).length,
+            byType: all.reduce((acc, h) => {
+              acc[h.adjustmentType] = (acc[h.adjustmentType] || 0) + 1;
+              return acc;
+            }, {})
+          };
+        } else if (storeName === 'returns') {
+          stats[storeName] = {
+            count: all.length,
+            size: JSON.stringify(all).length,
+            byType: all.reduce((acc, r) => {
+              acc[r.returnType] = (acc[r.returnType] || 0) + 1;
+              return acc;
+            }, {}),
+            byCondition: all.reduce((acc, r) => {
+              acc[r.condition] = (acc[r.condition] || 0) + 1;
+              return acc;
+            }, {}),
+            totalRefundAmount: all.reduce((sum, r) => sum + (r.totalRefund || 0), 0)
+          };
+        } else if (storeName === 'stores') {
+          stats[storeName] = {
+            count: all.length,
+            size: JSON.stringify(all).length,
+            openCount: all.filter(s => s.open).length,
+            closedCount: all.filter(s => !s.open).length
+          };
+        } else if (storeName === 'transfers') {
+          stats[storeName] = {
+            count: all.length,
+            size: JSON.stringify(all).length,
+            pendingCount: all.filter(t => t.status === 'pending').length,
+            inTransitCount: all.filter(t => t.status === 'in-transit').length,
+            completedCount: all.filter(t => t.status === 'completed').length,
+            cancelledCount: all.filter(t => t.status === 'cancelled').length
+          };
         } else {
           stats[storeName] = {
             count: all.length,
@@ -770,9 +1845,12 @@ class DatabaseService {
   }
 
   async getSyncStats() {
-    const allTransactions = await this.getAll('transactions');
-    const allCustomers = await this.getAll('customers');
-    const allProducts = await this.getAll('products');
+    const allTransactions = await this.getTransactions();
+    const allCustomers = await this.getCustomers();
+    const allProducts = await this.getProducts();
+    const allReturns = await this.getAllReturns();
+    const allStores = await this.getAllStores();
+    const allTransfers = await this.getAllTransfers();
     const queue = await this.getSyncQueue();
     
     return {
@@ -791,6 +1869,21 @@ class DatabaseService {
         synced: allProducts.filter(p => p.synced).length,
         unsynced: allProducts.filter(p => !p.synced).length
       },
+      returns: {
+        total: allReturns.length,
+        synced: allReturns.filter(r => r.synced).length,
+        unsynced: allReturns.filter(r => !r.synced).length
+      },
+      stores: {
+        total: allStores.length,
+        synced: allStores.filter(s => s.synced).length,
+        unsynced: allStores.filter(s => !s.synced).length
+      },
+      transfers: {
+        total: allTransfers.length,
+        synced: allTransfers.filter(t => t.synced).length,
+        unsynced: allTransfers.filter(t => !t.synced).length
+      },
       queueLength: queue.length,
       isOnline: navigator.onLine
     };
@@ -804,7 +1897,7 @@ class DatabaseService {
     try {
       await this.ensureInitialized();
       
-      const customers = await this.getAll('customers');
+      const customers = await this.getCustomers();
       console.log(`📊 Found ${customers.length} customers to process`);
       
       let fixed = 0;
@@ -826,7 +1919,7 @@ class DatabaseService {
         }
         
         if (needsUpdate) {
-          await this.put('customers', customer);
+          await this.saveCustomer(customer);
         }
       }
       
@@ -844,14 +1937,17 @@ class DatabaseService {
     try {
       await this.ensureInitialized();
       
-      const [transactions, customers, products] = await Promise.all([
-        this.getAll('transactions'),
-        this.getAll('customers'),
-        this.getAll('products')
+      const [transactions, customers, products, returns, stores, transfers] = await Promise.all([
+        this.getTransactions(),
+        this.getCustomers(),
+        this.getProducts(),
+        this.getAllReturns(),
+        this.getAllStores(),
+        this.getAllTransfers()
       ]);
       
       const uniqueTransactions = Array.from(
-        new Map(transactions.map(t => [t.receiptNumber, t])).values()
+        new Map(transactions.map(t => [`${t.receiptNumber}_${t.storeId}_${t.userId}`, t])).values()
       );
       
       if (uniqueTransactions.length < transactions.length) {
@@ -881,6 +1977,40 @@ class DatabaseService {
         
         for (const c of uniqueCustomers) {
           await store.put(c);
+        }
+      }
+      
+      const uniqueReturns = Array.from(
+        new Map(returns.map(r => [r.id, r])).values()
+      );
+      
+      if (uniqueReturns.length < returns.length) {
+        console.log(`🧹 Removing ${returns.length - uniqueReturns.length} duplicate returns`);
+        
+        const db = await this.ensureInitialized();
+        const tx = db.transaction('returns', 'readwrite');
+        const store = tx.objectStore('returns');
+        await store.clear();
+        
+        for (const r of uniqueReturns) {
+          await store.put(r);
+        }
+      }
+      
+      const uniqueStores = Array.from(
+        new Map(stores.map(s => [s.id, s])).values()
+      );
+      
+      if (uniqueStores.length < stores.length) {
+        console.log(`🧹 Removing ${stores.length - uniqueStores.length} duplicate stores`);
+        
+        const db = await this.ensureInitialized();
+        const tx = db.transaction('stores', 'readwrite');
+        const store = tx.objectStore('stores');
+        await store.clear();
+        
+        for (const s of uniqueStores) {
+          await store.put(s);
         }
       }
       

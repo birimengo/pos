@@ -2,6 +2,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useInventory } from '../context/InventoryContext';
+import { useStore } from '../context/StoreContext';
+import { useCurrency } from '../context/CurrencyContext';
 import { opfs } from '../services/opfsService';
 import { productService } from '../services/productService';
 import { Icons } from '../../../components/ui/Icons';
@@ -12,9 +14,11 @@ export default function ProductForm({ product, onClose, onSubmit }) {
   // ===== ALL HOOKS MUST BE CALLED FIRST =====
   const { theme, getTheme } = useTheme();
   const { state, dispatch } = useInventory();
+  const { activeStore } = useStore();
+  const { formatPrice, currency, getCurrencySymbol } = useCurrency();
   const currentTheme = getTheme(theme);
 
-  // ===== HELPER FUNCTIONS (can now safely use state) =====
+  // ===== HELPER FUNCTIONS =====
   const generateSKU = () => {
     const prefix = 'SKU';
     const timestamp = Date.now().toString().slice(-6);
@@ -35,13 +39,17 @@ export default function ProductForm({ product, onClose, onSubmit }) {
       newSKU = generateSKU();
       attempts++;
       if (attempts > maxAttempts) {
-        // Fallback: add timestamp to ensure uniqueness
         newSKU = `SKU-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
         break;
       }
     } while (usedSKUs.has(newSKU));
     
     return newSKU;
+  };
+
+  // Format currency for display
+  const formatCurrency = (amount) => {
+    return formatPrice(amount, { showSymbol: true, showCode: false });
   };
 
   // ===== STATE DECLARATIONS =====
@@ -62,6 +70,8 @@ export default function ProductForm({ product, onClose, onSubmit }) {
     cloudImages: product?.cloudImages || [],
     localMainImage: product?.localMainImage || null,
     cloudMainImage: product?.cloudMainImage || null,
+    storeId: product?.storeId || activeStore?.id,
+    storeName: product?.storeName || activeStore?.name,
     synced: product?.synced || false,
     syncRequired: product?.syncRequired || true,
     createdAt: product?.createdAt || null,
@@ -108,7 +118,6 @@ export default function ProductForm({ product, onClose, onSubmit }) {
     const loadExistingPreviews = async () => {
       const previews = [];
       
-      // Load local images
       if (formData.localImages?.length > 0) {
         for (const imagePath of formData.localImages) {
           try {
@@ -128,7 +137,6 @@ export default function ProductForm({ product, onClose, onSubmit }) {
         }
       }
       
-      // Load cloud images
       if (formData.cloudImages?.length > 0) {
         formData.cloudImages.forEach((img, index) => {
           if (img?.url) {
@@ -207,7 +215,6 @@ export default function ProductForm({ product, onClose, onSubmit }) {
     const files = Array.from(e.target.files);
     if (!files.length) return;
 
-    // Filter valid image files
     const validFiles = files.filter(file => {
       if (!file.type.startsWith('image/')) {
         console.warn(`Skipping non-image file: ${file.name}`);
@@ -499,6 +506,12 @@ export default function ProductForm({ product, onClose, onSubmit }) {
       return;
     }
 
+    if (!activeStore) {
+      setSaveMessage('No active store selected');
+      setSaveMessageType('error');
+      return;
+    }
+
     setSaving(true);
     setSaveMessage('');
 
@@ -509,15 +522,15 @@ export default function ProductForm({ product, onClose, onSubmit }) {
         cost: parseFloat(formData.cost),
         stock: parseInt(formData.stock, 10),
         reorderPoint: parseInt(formData.reorderPoint, 10) || 5,
+        storeId: activeStore.id,
+        storeName: activeStore.name,
         uploadMethod,
         updatedAt: new Date().toISOString(),
         synced: false,
         syncRequired: true
       };
 
-      const files = selectedFiles;
-
-      const localResult = await productService.saveProductLocally(finalFormData, files);
+      const localResult = await productService.saveProductLocally(finalFormData);
       
       if (!localResult.success) {
         throw new Error(localResult.error || 'Failed to save locally');
@@ -572,11 +585,18 @@ export default function ProductForm({ product, onClose, onSubmit }) {
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 overflow-y-auto p-4">
       <div className={`w-full max-w-6xl ${currentTheme.colors.card} rounded-xl shadow-2xl mx-auto`}>
-        {/* Header */}
+        {/* Header with Store Info */}
         <div className={`p-4 sm:p-6 border-b ${currentTheme.colors.border} flex justify-between items-center`}>
-          <h2 className={`text-lg sm:text-xl font-semibold ${currentTheme.colors.text} truncate pr-4`}>
-            {view === 'add' ? 'Add New Product' : 'Edit Product'}
-          </h2>
+          <div>
+            <h2 className={`text-lg sm:text-xl font-semibold ${currentTheme.colors.text} truncate pr-4`}>
+              {view === 'add' ? 'Add New Product' : 'Edit Product'}
+            </h2>
+            {activeStore && (
+              <p className={`text-xs ${currentTheme.colors.textMuted} mt-1`}>
+                Store: {activeStore.name} • {currency.code} ({getCurrencySymbol()})
+              </p>
+            )}
+          </div>
           <button 
             type="button"
             onClick={onClose} 
@@ -614,7 +634,6 @@ export default function ProductForm({ product, onClose, onSubmit }) {
               Product Images ({imagePreviews.length})
             </label>
             
-            {/* Image Gallery Grid */}
             {imagePreviews.length > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3 mb-4">
                 {imagePreviews.map((preview, index) => (
@@ -631,19 +650,16 @@ export default function ProductForm({ product, onClose, onSubmit }) {
                         }}
                       />
                       
-                      {/* Image Type Badge */}
                       <span className="absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded-full bg-black/50 text-white">
                         {preview.type === 'local' ? '📁' : '☁️'}
                       </span>
                       
-                      {/* Main Image Badge */}
                       {preview.isMain && (
                         <span className="absolute top-1 right-1 text-xs px-2 py-1 bg-blue-500 text-white rounded-full">
                           Main
                         </span>
                       )}
                       
-                      {/* Overlay Buttons */}
                       <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
                         {!preview.isMain && (
                           <button
@@ -838,57 +854,67 @@ export default function ProductForm({ product, onClose, onSubmit }) {
               </div>
             </div>
 
-            {/* Price */}
+            {/* Price with Currency Symbol */}
             <div>
               <label className={`text-xs sm:text-sm ${currentTheme.colors.textSecondary} block mb-1`}>
-                Price ($) <span className="text-red-500">*</span>
+                Price ({currency.code}) <span className="text-red-500">*</span>
               </label>
-              <input
-                type="number"
-                required
-                step="0.01"
-                min="0.01"
-                value={formData.price}
-                onChange={(e) => {
-                  setFormData({ ...formData, price: e.target.value });
-                  if (validationErrors.cost) {
-                    setValidationErrors({ ...validationErrors, cost: null });
-                  }
-                }}
-                className={`w-full px-3 py-2 text-sm sm:text-base rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} ${
-                  validationErrors.price ? 'border-red-500' : ''
-                }`}
-                placeholder="0.00"
-                disabled={saving}
-              />
+              <div className="relative">
+                <span className={`absolute left-3 top-2 text-sm ${currentTheme.colors.textMuted}`}>
+                  {getCurrencySymbol()}
+                </span>
+                <input
+                  type="number"
+                  required
+                  step="0.01"
+                  min="0.01"
+                  value={formData.price}
+                  onChange={(e) => {
+                    setFormData({ ...formData, price: e.target.value });
+                    if (validationErrors.cost) {
+                      setValidationErrors({ ...validationErrors, cost: null });
+                    }
+                  }}
+                  className={`w-full pl-8 pr-3 py-2 text-sm sm:text-base rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} ${
+                    validationErrors.price ? 'border-red-500' : ''
+                  }`}
+                  placeholder="0.00"
+                  disabled={saving}
+                />
+              </div>
               {validationErrors.price && (
                 <p className="text-xs text-red-500 mt-1">{validationErrors.price}</p>
               )}
             </div>
 
-            {/* Cost */}
+            {/* Cost with Currency Symbol */}
             <div>
               <label className={`text-xs sm:text-sm ${currentTheme.colors.textSecondary} block mb-1`}>
-                Cost ($) <span className="text-red-500">*</span>
+                Cost ({currency.code}) <span className="text-red-500">*</span>
               </label>
-              <input
-                type="number"
-                required
-                step="0.01"
-                min="0.01"
-                value={formData.cost}
-                onChange={(e) => setFormData({ ...formData, cost: e.target.value })}
-                className={`w-full px-3 py-2 text-sm sm:text-base rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} ${
-                  validationErrors.cost ? 'border-red-500' : ''
-                }`}
-                placeholder="0.00"
-                disabled={saving}
-              />
+              <div className="relative">
+                <span className={`absolute left-3 top-2 text-sm ${currentTheme.colors.textMuted}`}>
+                  {getCurrencySymbol()}
+                </span>
+                <input
+                  type="number"
+                  required
+                  step="0.01"
+                  min="0.01"
+                  value={formData.cost}
+                  onChange={(e) => setFormData({ ...formData, cost: e.target.value })}
+                  className={`w-full pl-8 pr-3 py-2 text-sm sm:text-base rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} ${
+                    validationErrors.cost ? 'border-red-500' : ''
+                  }`}
+                  placeholder="0.00"
+                  disabled={saving}
+                />
+              </div>
               {validationErrors.cost && (
                 <p className="text-xs text-red-500 mt-1">{validationErrors.cost}</p>
               )}
               {formData.price && formData.cost && parseFloat(formData.cost) >= parseFloat(formData.price) && (
-                <p className="text-xs text-red-500 mt-1">⚠️ Cost must be less than price</p>
+                <p className="text-xs text-red-500 mt-1">⚠️ Cost must be less than selling price</p>
               )}
             </div>
 
@@ -1032,6 +1058,25 @@ export default function ProductForm({ product, onClose, onSubmit }) {
               disabled={saving}
             />
           </div>
+
+          {/* Store Info (read-only) */}
+          {activeStore && (
+            <div className={`p-3 rounded-lg ${currentTheme.colors.accentLight} border ${currentTheme.colors.border}`}>
+              <div className="flex items-center gap-2">
+                <Icons.store className="text-sm text-blue-500" />
+                <div>
+                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Store Assignment</p>
+                  <p className={`text-sm font-medium ${currentTheme.colors.text}`}>{activeStore.name}</p>
+                  {activeStore.address && (
+                    <p className={`text-[10px] ${currentTheme.colors.textMuted}`}>{activeStore.address}, {activeStore.city}</p>
+                  )}
+                </div>
+              </div>
+              <p className={`text-[10px] ${currentTheme.colors.textMuted} mt-2`}>
+                This product will be added to {activeStore.name}'s inventory only
+              </p>
+            </div>
+          )}
 
           {/* Footer */}
           <div className={`pt-4 sm:pt-6 border-t ${currentTheme.colors.border} flex flex-col sm:flex-row justify-end gap-3`}>

@@ -1,6 +1,20 @@
 
 declare interface transactionType {
+	saveReturnTransaction(returnData: any): Promise<any>;
+
+	updateTransactionLocally(transactionId: any, updates: any): Promise<{	}>;
+
+	getReturnTransactions(): Promise<any>;
+
+	getReturnByOriginalTransaction(transactionId: any): Promise<null | Function | any[]>;
+
+	processReturn(transactionId: any, returnData: any): Promise<null | {	}>;
+
+	recordStockHistory(historyData: any): Promise<{	}>;
+
 	getTransactionLocally(transactionId: any): Promise<any>;
+
+	canReturnTransaction(transaction: any): any;
 
 	getAllTransactionsLocally(): Promise<null | any[]>;
 
@@ -16,7 +30,7 @@ declare interface transactionType {
 
 	removeFromSyncQueue(transactionId: any): Promise<void>;
 
-	syncTransactionToCloud(transactionId: any): Promise<{	}>;
+	syncTransactionToCloud(transactionId: any): Promise<null | {	}>;
 
 	syncAllPending(): Promise<{	}>;
 

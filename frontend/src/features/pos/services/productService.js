@@ -1,4 +1,4 @@
-// src/features/pos/services/productService.js (Complete CRUD with Enhanced Image Handling)
+// src/features/pos/services/productService.js
 import { db } from './database';
 import { opfs } from './opfsService';
 import { api } from './api';
@@ -26,30 +26,23 @@ class ProductService {
   async validateImageFile(file) {
     if (!file) return { valid: false, error: 'No file provided' };
     
-    // Check file exists
-    if (!file) return { valid: false, error: 'File is null or undefined' };
-    
-    // Check file size
     if (file.size === 0) return { valid: false, error: 'File is empty' };
     if (file.size < 100) return { valid: false, error: `File is too small/corrupted (${file.size} bytes)` };
     if (file.size > 10 * 1024 * 1024) return { valid: false, error: 'File too large (max 10MB)' };
     
-    // Check file type
     if (!file.type || !file.type.startsWith('image/')) {
       return { valid: false, error: `File is not an image (${file.type || 'unknown'})` };
     }
 
-    // Verify image signature
     try {
       const arrayBuffer = await file.slice(0, Math.min(100, file.size)).arrayBuffer();
       const uint8 = new Uint8Array(arrayBuffer);
       const header = Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
       
-      // Check for common image signatures
       const isValidJPEG = header.startsWith('ffd8');
       const isValidPNG = header.startsWith('89504e47');
       const isValidGIF = header.startsWith('474946');
-      const isValidWEBP = header.startsWith('52494646'); // RIFF header for WEBP
+      const isValidWEBP = header.startsWith('52494646');
       
       if (!isValidJPEG && !isValidPNG && !isValidGIF && !isValidWEBP) {
         return { valid: false, error: 'File is not a valid image (invalid signature)' };
@@ -59,6 +52,44 @@ class ProductService {
     } catch (error) {
       return { valid: false, error: `Failed to validate image: ${error.message}` };
     }
+  }
+
+  // ==================== STORE SYNC HELPER ====================
+
+  async ensureStoreSynced() {
+    const currentStore = await db.getCurrentStoreObject();
+    if (!currentStore) {
+      console.error('❌ No store selected');
+      return { success: false, error: 'No store selected. Please select a store first.' };
+    }
+    
+    // Check if store has MongoDB ID (must be a valid ObjectId format)
+    let storeMongoId = currentStore._id || currentStore.cloudId;
+    
+    // Validate if it's a proper MongoDB ObjectId (24 hex characters)
+    const isValidObjectId = storeMongoId && /^[0-9a-fA-F]{24}$/.test(storeMongoId);
+    
+    if (!storeMongoId || !isValidObjectId) {
+      console.log('⚠️ Store has no valid MongoDB ID, attempting to sync store first...');
+      
+      // If store has no MongoDB ID, we can't sync products
+      // This will happen if store was created locally but not yet synced
+      // In this case, we'll just skip sync and mark product as pending
+      console.log('📝 Store needs to be synced to cloud first. Product will be synced later.');
+      return { 
+        success: false, 
+        error: 'Store not synced to cloud yet. Product will sync automatically when store is ready.',
+        skip: true
+      };
+    }
+    
+    return { success: true, storeMongoId, store: currentStore };
+  }
+
+  async getStoreMongoId() {
+    const result = await this.ensureStoreSynced();
+    if (!result.success) return null;
+    return result.storeMongoId;
   }
 
   // ==================== CREATE ====================
@@ -71,6 +102,9 @@ class ProductService {
       
       const productId = productData.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
+      // Get current store ID (local ID, not MongoDB ID yet)
+      const currentStoreId = db.getCurrentStore();
+      
       const product = {
         ...productData,
         id: productId,
@@ -79,6 +113,7 @@ class ProductService {
         localMainImage: productData.localMainImage || null,
         cloudMainImage: productData.cloudMainImage || null,
         failedImages: productData.failedImages || [],
+        storeId: productData.storeId || currentStoreId,
         synced: false,
         syncRequired: true,
         createdAt: productData.createdAt || new Date().toISOString(),
@@ -102,7 +137,7 @@ class ProductService {
       }
 
       await db.saveProduct(product);
-      console.log(`✅ Product saved locally: ${product.name} (${productId})`);
+      console.log(`✅ Product saved locally: ${product.name} (${productId}) for store: ${product.storeId}`);
       
       await this.addToSyncQueue(productId);
       
@@ -121,7 +156,6 @@ class ProductService {
       const fileName = `${productId}_${timestamp}_${random}.${extension}`;
       const path = `products/${fileName}`;
       
-      // Validate before saving
       const validation = await this.validateImageFile(imageFile);
       if (!validation.valid) {
         throw new Error(validation.error);
@@ -173,7 +207,6 @@ class ProductService {
         throw new Error(`Product ${productId} not found`);
       }
 
-      // Handle new image if provided
       if (newImageFile) {
         const validation = await this.validateImageFile(newImageFile);
         if (validation.valid) {
@@ -193,7 +226,6 @@ class ProductService {
         }
       }
 
-      // Update product data
       const updatedProduct = {
         ...existingProduct,
         ...updates,
@@ -214,6 +246,89 @@ class ProductService {
     }
   }
 
+  // ==================== UPDATE PRODUCT STOCK ====================
+
+  async updateProductStock(productId, quantityChange) {
+    try {
+      await db.ensureInitialized();
+      
+      const product = await db.getProduct(String(productId));
+      if (!product) {
+        throw new Error(`Product ${productId} not found`);
+      }
+      
+      const oldStock = product.stock;
+      product.stock = (product.stock || 0) + quantityChange;
+      product.updatedAt = new Date().toISOString();
+      product.synced = false;
+      product.syncRequired = true;
+      
+      await db.saveProduct(product);
+      
+      console.log(`📦 Stock updated for ${product.name}: ${oldStock} → ${product.stock} (${quantityChange >= 0 ? '+' : ''}${quantityChange})`);
+      
+      await this.addToSyncQueue(product.id);
+      
+      return { success: true, product, oldStock, newStock: product.stock };
+    } catch (error) {
+      console.error('❌ Failed to update product stock:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async restoreProductStock(transactionItems) {
+    try {
+      await db.ensureInitialized();
+      const results = [];
+      
+      for (const item of transactionItems) {
+        const result = await this.updateProductStock(item.productId, item.quantity);
+        results.push(result);
+      }
+      
+      const successCount = results.filter(r => r.success).length;
+      console.log(`✅ Restored stock for ${successCount} of ${results.length} products`);
+      
+      return { success: true, results, successCount };
+    } catch (error) {
+      console.error('❌ Failed to restore product stock:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // ==================== RECORD LOCAL STOCK HISTORY ====================
+
+  async recordLocalStockHistory(historyData) {
+    try {
+      await db.ensureInitialized();
+      
+      const stockHistory = {
+        id: `sh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        productId: String(historyData.productId),
+        productName: historyData.productName,
+        productSku: historyData.productSku,
+        previousStock: historyData.previousStock,
+        newStock: historyData.newStock,
+        quantityChange: historyData.quantityChange,
+        adjustmentType: historyData.adjustmentType,
+        reason: historyData.reason,
+        notes: historyData.notes,
+        performedBy: historyData.performedBy || 'system',
+        storeId: db.getCurrentStore(),
+        createdAt: historyData.createdAt || new Date().toISOString(),
+        synced: false
+      };
+      
+      await db.addToStockHistory(stockHistory);
+      console.log(`📝 Local stock history recorded: ${historyData.productName} - ${historyData.quantityChange > 0 ? '+' : ''}${historyData.quantityChange} (${historyData.adjustmentType})`);
+      
+      return { success: true, history: stockHistory };
+    } catch (error) {
+      console.error('Failed to record local stock history:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
   // ==================== DELETE ====================
 
   async deleteProduct(productId, deleteFromCloud = true) {
@@ -225,7 +340,6 @@ class ProductService {
       const product = await db.getProduct(productId);
       
       if (product) {
-        // Delete local images from OPFS
         if (product.localImages?.length > 0) {
           for (const localPath of product.localImages) {
             try {
@@ -238,11 +352,9 @@ class ProductService {
           }
         }
         
-        // Delete from IndexedDB
         await db.deleteProduct(productId);
         console.log('✅ Product deleted from local database');
         
-        // Delete from cloud if requested and online
         if (deleteFromCloud && product._id && navigator.onLine) {
           try {
             const result = await api.deleteProduct(product._id);
@@ -289,7 +401,7 @@ class ProductService {
       await db.ensureInitialized();
       await db.addToSyncQueue({
         type: 'product',
-        productId,
+        productId: String(productId),
         timestamp: new Date().toISOString()
       });
       console.log(`📋 Product ${productId} added to sync queue`);
@@ -314,14 +426,37 @@ class ProductService {
     try {
       await db.ensureInitialized();
       
-      const product = await db.getProduct(productId);
+      const product = await db.getProduct(String(productId));
       if (!product) {
         throw new Error(`Product ${productId} not found locally`);
       }
 
-      console.log(`☁️ Syncing product ${product.name} to cloud...`);
+      // Ensure store is synced and get MongoDB ID
+      const storeSyncResult = await this.ensureStoreSynced();
+      if (!storeSyncResult.success) {
+        // If store is not synced, keep product in queue for later
+        console.log('⏳ Store not synced yet, keeping product in queue for later sync');
+        return { 
+          success: false, 
+          error: storeSyncResult.error,
+          skip: true,
+          keepInQueue: true
+        };
+      }
 
-      // Upload images to Cloudinary
+      const storeMongoId = storeSyncResult.storeMongoId;
+      if (!storeMongoId || !/^[0-9a-fA-F]{24}$/.test(storeMongoId)) {
+        console.error('❌ Invalid store MongoDB ID:', storeMongoId);
+        return { 
+          success: false, 
+          error: 'Invalid store MongoDB ID. Please refresh and try again.',
+          skip: true,
+          keepInQueue: true
+        };
+      }
+
+      console.log(`☁️ Syncing product ${product.name} to cloud for store: ${storeMongoId}`);
+
       const cloudImages = [...(product.cloudImages || [])];
       const uploadedImages = [];
       const failedImages = [...(product.failedImages || [])];
@@ -346,7 +481,6 @@ class ProductService {
               continue;
             }
 
-            // Validate image before upload
             const validation = await this.validateImageFile(imageFile);
             if (!validation.valid) {
               console.warn(`⚠️ Invalid image file: ${fileName} - ${validation.error}`);
@@ -356,7 +490,6 @@ class ProductService {
                 timestamp: new Date().toISOString()
               });
               
-              // Delete corrupted file
               try {
                 await opfs.deleteFile(fileName, 'products');
                 console.log(`🗑️ Deleted corrupted image: ${fileName}`);
@@ -369,17 +502,13 @@ class ProductService {
 
             console.log(`☁️ Uploading image ${i+1}/${product.localImages.length}...`);
             
-            // Create a unique file to avoid Cloudinary duplicate detection
             const uniqueFile = new File(
               [imageFile], 
               `${Date.now()}_${fileName}`,
               { type: imageFile.type || 'image/jpeg' }
             );
             
-            const cloudinaryResult = await api.uploadImageToCloudinary(
-              uniqueFile, 
-              'products'
-            );
+            const cloudinaryResult = await api.uploadImageToCloudinary(uniqueFile, 'products');
             
             const imageData = {
               url: cloudinaryResult.secure_url,
@@ -399,7 +528,6 @@ class ProductService {
             
             console.log(`✅ Image ${i+1} uploaded successfully (${cloudinaryResult.bytes} bytes)`);
             
-            // Delete local image after successful upload
             try {
               await opfs.deleteFile(fileName, 'products');
               console.log(`🗑️ Deleted local image: ${fileName}`);
@@ -418,7 +546,6 @@ class ProductService {
         }
       }
 
-      // Prepare product data for MongoDB
       const productData = {
         name: product.name,
         sku: product.sku,
@@ -434,12 +561,12 @@ class ProductService {
         cloudinaryImages: cloudImages,
         cloudMainImage: cloudImages.find(img => img.isMain)?.url || cloudImages[0]?.url,
         uploadedImages: uploadedImages.map(img => img.cloudData.url),
+        storeId: storeMongoId,
         updatedAt: new Date().toISOString()
       };
 
-      console.log('📤 Sending to MongoDB...');
+      console.log('📤 Sending to MongoDB with storeId:', storeMongoId);
 
-      // Send to MongoDB
       let mongoResult;
       if (product._id) {
         mongoResult = await api.updateProduct(product._id, productData);
@@ -448,15 +575,15 @@ class ProductService {
       }
 
       if (mongoResult.success) {
-        // Update local product with cloud data
         const updatedProduct = {
           ...product,
           _id: mongoResult.product._id,
           cloudImages,
           cloudMainImage: cloudImages.find(img => img.isMain)?.url || cloudImages[0]?.url,
-          localImages: [], // Clear local images after successful upload
+          localImages: [],
           localMainImage: null,
           failedImages: failedImages.length > 0 ? failedImages : [],
+          storeId: storeMongoId,
           synced: true,
           syncRequired: false,
           lastSyncedAt: new Date().toISOString()
@@ -464,7 +591,7 @@ class ProductService {
         
         await db.saveProduct(updatedProduct);
         
-        console.log(`✅ Product ${product.name} synced to cloud with ${cloudImages.length} images`);
+        console.log(`✅ Product ${product.name} synced to cloud with ${cloudImages.length} images for store ${storeMongoId}`);
         if (failedImages.length > 0) {
           console.log(`⚠️ ${failedImages.length} images failed to upload`);
         }
@@ -481,9 +608,8 @@ class ProductService {
     } catch (error) {
       console.error('❌ Failed to sync product to cloud:', error);
       
-      // Update product with sync error
       try {
-        const product = await db.getProduct(productId);
+        const product = await db.getProduct(String(productId));
         if (product) {
           product.syncError = error.message;
           product.lastSyncAttempt = new Date().toISOString();
@@ -515,6 +641,8 @@ class ProductService {
     }
   }
 
+  // ==================== SYNC ALL PENDING ====================
+
   async syncAllPending() {
     if (this.syncInProgress) {
       return { success: false, error: 'Sync already in progress' };
@@ -532,22 +660,134 @@ class ProductService {
       const results = [];
       let uploadedTotal = 0;
       let failedTotal = 0;
+      const itemsToKeep = [];
       
       for (const item of queue) {
-        if (item.type === 'delete') {
-          const result = await this.syncDeleteFromCloud(item);
-          if (result.success) {
-            await db.delete('syncQueue', item.id);
+        try {
+          if (item.type === 'delete') {
+            const result = await this.syncDeleteFromCloud(item);
+            if (result.success) {
+              await db.delete('syncQueue', item.id);
+            }
+            results.push({ item, ...result });
+          } 
+          else if (item.type === 'product') {
+            if (!item.productId) {
+              console.warn(`⚠️ Invalid queue item: missing productId, removing`);
+              await db.delete('syncQueue', item.id);
+              results.push({ item, success: false, error: 'Missing productId', removed: true });
+              continue;
+            }
+            
+            const product = await db.getProduct(String(item.productId));
+            if (!product) {
+              console.warn(`⚠️ Product ${item.productId} not found, removing from queue`);
+              await db.delete('syncQueue', item.id);
+              results.push({ item, success: false, error: 'Product not found', removed: true });
+              continue;
+            }
+            
+            const result = await this.syncProductToCloud(item.productId);
+            if (result.success) {
+              await db.delete('syncQueue', item.id);
+              uploadedTotal += result.uploadedCount || 0;
+              failedTotal += result.failedCount || 0;
+            } else if (result.keepInQueue) {
+              // Keep item in queue for later
+              itemsToKeep.push(item);
+            }
+            results.push({ item, ...result });
           }
-          results.push({ item, ...result });
-        } else {
-          const result = await this.syncProductToCloud(item.productId);
-          if (result.success) {
-            await db.delete('syncQueue', item.id);
-            uploadedTotal += result.uploadedCount || 0;
-            failedTotal += result.failedCount || 0;
+          else if (item.type === 'transaction') {
+            if (!item.transactionId) {
+              console.warn(`⚠️ Invalid queue item: missing transactionId, removing`);
+              await db.delete('syncQueue', item.id);
+              results.push({ item, success: false, error: 'Missing transactionId', removed: true });
+              continue;
+            }
+            
+            try {
+              const { transactionService } = await import('./transactionService');
+              const result = await transactionService.syncTransactionToCloud(item.transactionId);
+              
+              if (result.success) {
+                await db.delete('syncQueue', item.id);
+                console.log(`✅ Transaction ${item.transactionId} synced successfully`);
+              } else {
+                console.warn(`⚠️ Transaction sync failed: ${result.error}`);
+              }
+              results.push({ item, ...result });
+            } catch (txError) {
+              console.error(`Failed to sync transaction ${item.transactionId}:`, txError);
+              results.push({ item, success: false, error: txError.message });
+            }
           }
-          results.push({ item, ...result });
+          else if (item.type === 'customer') {
+            if (!item.customerId) {
+              console.warn(`⚠️ Invalid queue item: missing customerId, removing`);
+              await db.delete('syncQueue', item.id);
+              results.push({ item, success: false, error: 'Missing customerId', removed: true });
+              continue;
+            }
+            
+            try {
+              const { customerService } = await import('./customerService');
+              const result = await customerService.syncCustomerToCloud(item.customerId);
+              
+              if (result.success) {
+                await db.delete('syncQueue', item.id);
+                console.log(`✅ Customer ${item.customerId} synced successfully`);
+              } else {
+                console.warn(`⚠️ Customer sync failed: ${result.error}`);
+              }
+              results.push({ item, ...result });
+            } catch (custError) {
+              console.error(`Failed to sync customer ${item.customerId}:`, custError);
+              results.push({ item, success: false, error: custError.message });
+            }
+          }
+          else if (item.type === 'return') {
+            if (!item.returnId) {
+              console.warn(`⚠️ Invalid queue item: missing returnId, removing`);
+              await db.delete('syncQueue', item.id);
+              results.push({ item, success: false, error: 'Missing returnId', removed: true });
+              continue;
+            }
+            
+            try {
+              const returnRecord = await db.get('returns', String(item.returnId));
+              if (!returnRecord) {
+                console.warn(`⚠️ Return ${item.returnId} not found, removing from queue`);
+                await db.delete('syncQueue', item.id);
+                results.push({ item, success: false, error: 'Return not found', removed: true });
+                continue;
+              }
+              
+              returnRecord.synced = true;
+              returnRecord.lastSyncedAt = new Date().toISOString();
+              await db.put('returns', returnRecord);
+              await db.delete('syncQueue', item.id);
+              
+              console.log(`✅ Return ${item.returnId} marked as synced`);
+              results.push({ item, success: true, message: 'Return synced' });
+            } catch (returnError) {
+              console.error(`Failed to sync return ${item.returnId}:`, returnError);
+              results.push({ item, success: false, error: returnError.message });
+            }
+          }
+          else {
+            console.warn(`⚠️ Unknown queue item type: ${item.type}, removing`);
+            await db.delete('syncQueue', item.id);
+            results.push({ item, success: false, error: 'Unknown type', removed: true });
+          }
+        } catch (itemError) {
+          console.error(`Failed to process queue item ${item.id}:`, itemError);
+          if (itemError.message?.includes('not found') || itemError.message?.includes('undefined')) {
+            await db.delete('syncQueue', item.id);
+          } else {
+            itemsToKeep.push(item);
+          }
+          results.push({ item, success: false, error: itemError.message });
         }
       }
       
@@ -633,7 +873,6 @@ class ProductService {
       const pendingProducts = allProducts.filter(p => !p.synced);
       const queue = await db.getSyncQueue();
       
-      // Count images
       const totalLocalImages = allProducts.reduce((sum, p) => sum + (p.localImages?.length || 0), 0);
       const totalCloudImages = allProducts.reduce((sum, p) => sum + (p.cloudImages?.length || 0), 0);
       

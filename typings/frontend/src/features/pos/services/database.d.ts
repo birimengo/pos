@@ -8,7 +8,15 @@ declare interface itemType {
 
 	_saveProduct(db: any, data: any): Promise<any>;
 
-	delete(storeName: any, id: any): Promise<void>;
+	_saveStockHistory(db: any, data: any): Promise<any>;
+
+	_saveReturn(db: any, data: any): Promise<any>;
+
+	_saveStore(db: any, data: any): Promise<any>;
+
+	_saveTransfer(db: any, data: any): Promise<any>;
+
+	delete(storeName: any, id: any): Promise<null>;
 
 	query(storeName: any, indexName: any, value: any): Promise<any>;
 
@@ -20,11 +28,11 @@ declare interface itemType {
 
 	getProducts(): Promise<any>;
 
-	getProductsByCategory(category: any): Promise<any>;
+	getProductsByCategory(category: any): Promise<Function>;
 
-	getProductBySku(sku: any): Promise<any[]>;
+	getProductBySku(sku: any): Promise<Function>;
 
-	getUnsyncedProducts(): Promise<any>;
+	getUnsyncedProducts(): Promise<Function>;
 
 	markProductSynced(id: any, cloudId: any): Promise<void>;
 
@@ -42,7 +50,7 @@ declare interface itemType {
 
 	getCustomerByCloudId(cloudId: any): Promise<any>;
 
-	getUnsyncedCustomers(): Promise<any>;
+	getUnsyncedCustomers(): Promise<Function>;
 
 	markCustomerSynced(id: any, cloudId: any): Promise<void>;
 
@@ -50,29 +58,115 @@ declare interface itemType {
 
 	getTransaction(id: any): Promise<any>;
 
-	getTransactions(): Promise<Function>;
+	getTransactions(): Promise<any>;
 
-	getTransactionsByDateRange(startDate: any, endDate: any): Promise<any>;
+	getTransactionsByDateRange(startDate: any, endDate: any): Promise<null | Date>;
 
-	getTransactionsByCustomer(customerId: any): Promise<Function | null>;
+	getTransactionsByCustomer(customerId: any): Promise<null>;
 
-	getTransactionsByPaymentMethod(paymentMethod: any): Promise<any>;
+	getTransactionsByPaymentMethod(paymentMethod: any): Promise<Function>;
 
-	getCreditTransactions(): Promise<any>;
+	getCreditTransactions(): Promise<Function>;
 
-	getInstallmentTransactions(): Promise<any>;
+	getInstallmentTransactions(): Promise<Function>;
 
 	getPendingPayments(): Promise<null | number | Date>;
 
 	getOverdueTransactions(): Promise<Function>;
 
-	getUnsyncedTransactions(): Promise<any>;
+	getUnsyncedTransactions(): Promise<Function>;
 
 	markTransactionSynced(id: any, cloudId: any): Promise<void>;
 
 	getDailySales(date: any, Date: any): Promise<null>;
 
 	_isOverdue(transaction: any): boolean | Date;
+
+	addToStockHistory(historyData: any): Promise<any>;
+
+	getStockHistory(productId: any): Promise<null>;
+
+	getStockHistoryByStore(): Promise<any>;
+
+	getStockHistoryByType(productId: any, adjustmentType: any): Promise<Function>;
+
+	updateStockHistory(id: any, updates: any): Promise<boolean>;
+
+	deleteStockHistory(id: any): Promise<any>;
+
+	clearStockHistory(): Promise<void>;
+
+	getStockHistoryStats(): Promise<any>;
+
+	saveReturn(returnData: any): Promise<any>;
+
+	getReturn(id: any): Promise<any>;
+
+	getAllReturns(): Promise<any>;
+
+	getReturnsByOriginalTransaction(transactionId: any): Promise<null | Function>;
+
+	getReturnsByOriginalReceipt(receiptNumber: any): Promise<null | Function>;
+
+	getReturnsByType(returnType: any): Promise<null | Function>;
+
+	getReturnsByCondition(condition: any): Promise<null | Function>;
+
+	getReturnsByCustomer(customerId: any): Promise<null | Function>;
+
+	getUnsyncedReturns(): Promise<null | Function>;
+
+	markReturnSynced(id: any, cloudId: any): Promise<null>;
+
+	deleteReturn(id: any): Promise<any>;
+
+	clearReturns(): Promise<null>;
+
+	getReturnsStats(): Promise<any>;
+
+	saveStore(store: any): Promise<any>;
+
+	getStore(id: any): Promise<any>;
+
+	getAllStores(): Promise<any>;
+
+	getStoresByCity(city: any): Promise<Function>;
+
+	getStoresByState(state: any): Promise<Function>;
+
+	getOpenStores(): Promise<Function>;
+
+	getDefaultStore(): Promise<Function>;
+
+	deleteStore(id: any): Promise<any>;
+
+	clearStores(): Promise<void>;
+
+	saveTransfer(transfer: any): Promise<any>;
+
+	getTransfer(id: any): Promise<any>;
+
+	getAllTransfers(): Promise<any>;
+
+	getTransfersByFromStore(storeId: any): Promise<Function>;
+
+	getTransfersByToStore(storeId: any): Promise<Function>;
+
+	getTransfersByProduct(productId: any): Promise<Function>;
+
+	getTransfersByStatus(status: any): Promise<Function>;
+
+	getPendingTransfers(): Promise<any>;
+
+	getInTransitTransfers(): Promise<any>;
+
+	getCompletedTransfers(): Promise<any>;
+
+	deleteTransfer(id: any): Promise<any>;
+
+	clearTransfers(): Promise<void>;
+
+	getTransfersStats(): Promise<any>;
 
 	addToSyncQueue(item: any): Promise<any>;
 
@@ -82,7 +176,7 @@ declare interface itemType {
 
 	getPendingSyncItems(): Promise<Function>;
 
-	updateSyncQueueItem(id: any, updates: any): Promise<void>;
+	updateSyncQueueItem(id: any, updates: any): Promise<null>;
 
 	deleteSyncQueueItem(id: any): Promise<any>;
 
@@ -92,13 +186,11 @@ declare interface itemType {
 
 	setSetting(key: any, value: any): Promise<void>;
 
-	clearAllStores(): Promise<void>;
-
 	getDatabaseStats(): Promise<any>;
 
 	getSyncStats(): Promise<null>;
 
 	fixEmailIndex(): Promise<{	}>;
 
-	vacuum(): Promise<{	}>;
+	vacuum(): Promise<null | {	}>;
 }

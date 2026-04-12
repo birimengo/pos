@@ -1,8 +1,9 @@
+// backend/models/Product.js
 import mongoose from 'mongoose';
 
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  sku: { type: String, required: true, unique: true },
+  sku: { type: String, required: true },
   barcode: String,
   price: { type: Number, required: true },
   cost: { type: Number, required: true },
@@ -21,12 +22,15 @@ const productSchema = new mongoose.Schema({
     height: Number,
     isMain: { type: Boolean, default: false }
   }],
-  storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+  storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', required: true, index: true },
+  storeSpecific: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
 
-// Fix: Remove the callback parameter
+// Compound unique index for SKU per store
+productSchema.index({ sku: 1, storeId: 1 }, { unique: true });
+
 productSchema.pre('save', function() {
   this.updatedAt = Date.now();
 });

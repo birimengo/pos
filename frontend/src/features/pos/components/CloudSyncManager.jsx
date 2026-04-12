@@ -4,6 +4,15 @@ import { useTheme } from '../../../context/ThemeContext';
 import { cloudSync } from '../services/cloudSyncService';
 import { Icons } from '../../../components/ui/Icons';
 
+// Safe icon wrapper component to prevent undefined icon errors
+const SafeIcon = ({ icon: Icon, className, fallback = '•' }) => {
+  if (!Icon) {
+    console.warn('Icon component is undefined, using fallback');
+    return <span className={className}>{fallback}</span>;
+  }
+  return <Icon className={className} />;
+};
+
 export default function CloudSyncManager({ onClose }) {
   const [status, setStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
@@ -68,7 +77,9 @@ export default function CloudSyncManager({ onClose }) {
     const result = await cloudSync.fullSync();
     
     if (result.success) {
-      setSyncMessage(`✅ Sync complete: ${result.stats.pulled} items pulled, ${result.stats.pushed} items pushed`);
+      setSyncMessage(`✅ Sync complete: ${result.stats?.pulled || 0} items pulled, ${result.stats?.pushed || 0} items pushed`);
+    } else if (result.skipped) {
+      setSyncMessage(`⚠️ Sync skipped: ${result.error || 'Authentication required'}`);
     } else {
       setSyncMessage(`❌ Sync failed: ${result.error}`);
     }
@@ -85,6 +96,8 @@ export default function CloudSyncManager({ onClose }) {
     
     if (result.success) {
       setSyncMessage(`✅ Pulled ${result.count} items from cloud`);
+    } else if (result.skipped) {
+      setSyncMessage(`⚠️ Pull skipped: ${result.error || 'Authentication required'}`);
     } else {
       setSyncMessage(`❌ Pull failed: ${result.error}`);
     }
@@ -101,6 +114,8 @@ export default function CloudSyncManager({ onClose }) {
     
     if (result.success) {
       setSyncMessage(`✅ Pushed ${result.count} items to cloud`);
+    } else if (result.skipped) {
+      setSyncMessage(`⚠️ Push skipped: ${result.error || 'Authentication required'}`);
     } else {
       setSyncMessage(`❌ Push failed: ${result.error}`);
     }
@@ -151,7 +166,7 @@ export default function CloudSyncManager({ onClose }) {
           {/* Header */}
           <div className={`p-4 sm:p-6 border-b ${currentTheme.colors.border} flex justify-between items-center sticky top-0 ${currentTheme.colors.card} z-10`}>
             <div className="flex items-center gap-2">
-              <Icons.cloud className={`text-xl sm:text-2xl ${currentTheme.accentText}`} />
+              <SafeIcon icon={Icons.cloud} className={`text-xl sm:text-2xl ${currentTheme.accentText}`} fallback="☁️" />
               <h2 className={`text-lg sm:text-xl font-semibold ${currentTheme.colors.text}`}>
                 Cloud Sync Manager
               </h2>
@@ -161,7 +176,7 @@ export default function CloudSyncManager({ onClose }) {
               className={`p-2 rounded-lg ${currentTheme.colors.hover} transition-colors`}
               disabled={syncing || restoring}
             >
-              <Icons.x className="text-xl" />
+              <SafeIcon icon={Icons.x} className="text-xl" fallback="✕" />
             </button>
           </div>
 
@@ -222,13 +237,16 @@ export default function CloudSyncManager({ onClose }) {
                   ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800'
                   : syncMessage.includes('❌')
                   ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800'
+                  : syncMessage.includes('⚠️')
+                  ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-800'
                   : 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800'
               }`}>
                 <div className="flex items-center gap-2">
-                  {syncMessage.includes('✅') && <Icons.checkCircle className="text-lg" />}
-                  {syncMessage.includes('❌') && <Icons.alertCircle className="text-lg" />}
-                  {!syncMessage.includes('✅') && !syncMessage.includes('❌') && (
-                    <Icons.refresh className="animate-spin text-lg" />
+                  {syncMessage.includes('✅') && <SafeIcon icon={Icons.checkCircle} className="text-lg" fallback="✓" />}
+                  {syncMessage.includes('❌') && <SafeIcon icon={Icons.alertCircle} className="text-lg" fallback="⚠️" />}
+                  {syncMessage.includes('⚠️') && <SafeIcon icon={Icons.alert} className="text-lg" fallback="⚠️" />}
+                  {!syncMessage.includes('✅') && !syncMessage.includes('❌') && !syncMessage.includes('⚠️') && (
+                    <SafeIcon icon={Icons.refresh} className="animate-spin text-lg" fallback="⟳" />
                   )}
                   <span>{syncMessage}</span>
                 </div>
@@ -240,52 +258,52 @@ export default function CloudSyncManager({ onClose }) {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className={`${currentTheme.colors.accentLight} p-4 rounded-lg border ${currentTheme.colors.border}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <Icons.package className={`text-lg ${currentTheme.accentText}`} />
+                    <SafeIcon icon={Icons.package} className={`text-lg ${currentTheme.accentText}`} fallback="📦" />
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                      syncStats.products.unsynced > 0 
+                      syncStats.products?.unsynced > 0 
                         ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
                         : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                     }`}>
-                      {syncStats.products.unsynced > 0 ? `${syncStats.products.unsynced} unsynced` : 'synced'}
+                      {syncStats.products?.unsynced > 0 ? `${syncStats.products.unsynced} unsynced` : 'synced'}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Products</p>
-                  <p className={`text-2xl font-bold ${currentTheme.colors.text}`}>{syncStats.products.total}</p>
+                  <p className={`text-2xl font-bold ${currentTheme.colors.text}`}>{syncStats.products?.total || 0}</p>
                 </div>
 
                 <div className={`${currentTheme.colors.accentLight} p-4 rounded-lg border ${currentTheme.colors.border}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <Icons.users className={`text-lg ${currentTheme.accentText}`} />
+                    <SafeIcon icon={Icons.users} className={`text-lg ${currentTheme.accentText}`} fallback="👥" />
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                      syncStats.customers.unsynced > 0 
+                      syncStats.customers?.unsynced > 0 
                         ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
                         : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                     }`}>
-                      {syncStats.customers.unsynced > 0 ? `${syncStats.customers.unsynced} unsynced` : 'synced'}
+                      {syncStats.customers?.unsynced > 0 ? `${syncStats.customers.unsynced} unsynced` : 'synced'}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Customers</p>
-                  <p className={`text-2xl font-bold ${currentTheme.colors.text}`}>{syncStats.customers.total}</p>
+                  <p className={`text-2xl font-bold ${currentTheme.colors.text}`}>{syncStats.customers?.total || 0}</p>
                 </div>
 
                 <div className={`${currentTheme.colors.accentLight} p-4 rounded-lg border ${currentTheme.colors.border}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <Icons.shoppingBag className={`text-lg ${currentTheme.accentText}`} />
+                    <SafeIcon icon={Icons.shoppingBag} className={`text-lg ${currentTheme.accentText}`} fallback="🛍️" />
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                      syncStats.transactions.unsynced > 0 
+                      syncStats.transactions?.unsynced > 0 
                         ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
                         : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                     }`}>
-                      {syncStats.transactions.unsynced > 0 ? `${syncStats.transactions.unsynced} unsynced` : 'synced'}
+                      {syncStats.transactions?.unsynced > 0 ? `${syncStats.transactions.unsynced} unsynced` : 'synced'}
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Transactions</p>
-                  <p className={`text-2xl font-bold ${currentTheme.colors.text}`}>{syncStats.transactions.total}</p>
+                  <p className={`text-2xl font-bold ${currentTheme.colors.text}`}>{syncStats.transactions?.total || 0}</p>
                 </div>
 
                 <div className={`${currentTheme.colors.accentLight} p-4 rounded-lg border ${currentTheme.colors.border}`}>
                   <div className="flex items-center justify-between mb-2">
-                    <Icons.clock className={`text-lg ${currentTheme.accentText}`} />
+                    <SafeIcon icon={Icons.clock} className={`text-lg ${currentTheme.accentText}`} fallback="🕐" />
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${
                       syncStats.queue > 0 
                         ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
@@ -313,12 +331,12 @@ export default function CloudSyncManager({ onClose }) {
               >
                 {syncing ? (
                   <>
-                    <Icons.refresh className="animate-spin text-lg sm:text-xl" />
+                    <SafeIcon icon={Icons.refresh} className="animate-spin text-lg sm:text-xl" fallback="⟳" />
                     <span>Syncing...</span>
                   </>
                 ) : (
                   <>
-                    <Icons.refresh className="text-lg sm:text-xl" />
+                    <SafeIcon icon={Icons.refresh} className="text-lg sm:text-xl" fallback="⟳" />
                     <span>Full Sync (Push & Pull)</span>
                   </>
                 )}
@@ -327,14 +345,14 @@ export default function CloudSyncManager({ onClose }) {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   onClick={handlePushToCloud}
-                  disabled={syncing || restoring || !status?.isOnline || (syncStats?.products.unsynced === 0 && syncStats?.customers.unsynced === 0 && syncStats?.transactions.unsynced === 0)}
+                  disabled={syncing || restoring || !status?.isOnline || (syncStats?.products?.unsynced === 0 && syncStats?.customers?.unsynced === 0 && syncStats?.transactions?.unsynced === 0)}
                   className={`py-3 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-all
-                    ${syncing || restoring || !status?.isOnline || (syncStats?.products.unsynced === 0 && syncStats?.customers.unsynced === 0 && syncStats?.transactions.unsynced === 0)
+                    ${syncing || restoring || !status?.isOnline || (syncStats?.products?.unsynced === 0 && syncStats?.customers?.unsynced === 0 && syncStats?.transactions?.unsynced === 0)
                       ? 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed'
                       : 'bg-gradient-to-r from-green-500 to-green-600 text-white hover:from-green-600 hover:to-green-700 shadow-md hover:shadow-lg'
                     }`}
                 >
-                  <Icons.upload className="text-base sm:text-lg" />
+                  <SafeIcon icon={Icons.upload} className="text-base sm:text-lg" fallback="↑" />
                   <span>Push to Cloud</span>
                 </button>
 
@@ -347,7 +365,7 @@ export default function CloudSyncManager({ onClose }) {
                       : 'bg-gradient-to-r from-purple-500 to-purple-600 text-white hover:from-purple-600 hover:to-purple-700 shadow-md hover:shadow-lg'
                     }`}
                 >
-                  <Icons.download className="text-base sm:text-lg" />
+                  <SafeIcon icon={Icons.download} className="text-base sm:text-lg" fallback="↓" />
                   <span>Pull from Cloud</span>
                 </button>
               </div>
@@ -361,14 +379,14 @@ export default function CloudSyncManager({ onClose }) {
                     : 'bg-gradient-to-r from-yellow-500 to-yellow-600 text-white hover:from-yellow-600 hover:to-yellow-700 shadow-md hover:shadow-lg'
                 }`}
               >
-                <Icons.refresh className="text-base sm:text-lg" />
+                <SafeIcon icon={Icons.refresh} className="text-base sm:text-lg" fallback="⟳" />
                 <span>Restore from Cloud (Clear Local)</span>
               </button>
             </div>
 
             {/* Warning Note */}
             <div className={`text-xs text-gray-500 dark:text-gray-400 ${currentTheme.colors.accentLight} p-4 rounded-lg border ${currentTheme.colors.border} flex items-start gap-2`}>
-              <Icons.info className="text-base flex-shrink-0 mt-0.5" />
+              <SafeIcon icon={Icons.info} className="text-base flex-shrink-0 mt-0.5" fallback="ℹ️" />
               <p>
                 Restore will clear all local data and replace with cloud data. Make sure you have a backup before proceeding.
               </p>
@@ -394,7 +412,7 @@ export default function CloudSyncManager({ onClose }) {
           <div className={`${currentTheme.colors.card} rounded-xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in duration-200`}>
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-full bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
-                <Icons.alert className="text-xl text-yellow-600 dark:text-yellow-400" />
+                <SafeIcon icon={Icons.alert} className="text-xl text-yellow-600 dark:text-yellow-400" fallback="⚠️" />
               </div>
               <h3 className={`text-lg font-semibold ${currentTheme.colors.text}`}>Confirm Restore</h3>
             </div>

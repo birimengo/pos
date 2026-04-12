@@ -1,11 +1,16 @@
 // src/features/pos/checkout/Receipt.jsx
 import { useTheme } from '../../../context/ThemeContext';
+import { useCurrency } from '../context/CurrencyContext';
+import { useSettings } from '../context/SettingsContext';
 import { Icons } from '../../../components/ui/Icons';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import jsPDF from 'jspdf';
+import { api } from '../services/api';
 
 export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
   const { theme, getTheme } = useTheme();
+  const { formatPrice, currency, getCurrencySymbol, getCurrencyInfo } = useCurrency();
+  const { state: settingsState } = useSettings();
   const currentTheme = getTheme(theme);
   const [showPenaltyInfo, setShowPenaltyInfo] = useState(false);
   const [showShareOptions, setShowShareOptions] = useState(false);
@@ -13,7 +18,49 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
   const [shareMessage, setShareMessage] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [showWhatsappInput, setShowWhatsappInput] = useState(false);
+  const [storeInfo, setStoreInfo] = useState({
+    name: 'BizCore POS',
+    address: '123 Main Street',
+    phone: '(555) 123-4567',
+    email: 'info@bizcore.com',
+    taxRate: 0,
+    currency: 'USD'
+  });
   const receiptRef = useRef(null);
+
+  // Load store settings
+  useEffect(() => {
+    loadStoreSettings();
+  }, []);
+
+  const loadStoreSettings = async () => {
+    try {
+      const response = await api.get('/settings/store');
+      if (response.success && response.settings) {
+        setStoreInfo({
+          name: response.settings.name || 'BizCore POS',
+          address: response.settings.address || '123 Main Street',
+          phone: response.settings.phone || '(555) 123-4567',
+          email: response.settings.email || 'info@bizcore.com',
+          taxRate: response.settings.taxRate || 0,
+          currency: response.settings.currency || 'USD'
+        });
+      } else if (settingsState?.store) {
+        // Fallback to settings context
+        setStoreInfo({
+          name: settingsState.store.name || 'BizCore POS',
+          address: settingsState.store.address || '123 Main Street',
+          phone: settingsState.store.phone || '(555) 123-4567',
+          email: settingsState.store.email || 'info@bizcore.com',
+          taxRate: settingsState.store.taxRate || 0,
+          currency: settingsState.store.currency || 'USD'
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load store settings:', error);
+      // Keep default values
+    }
+  };
 
   // Safely access sale properties with defaults
   const saleData = {
@@ -38,15 +85,9 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
     refundRate: 70
   };
 
-  // Format price helper
-  const formatPrice = (price) => {
-    if (price === undefined || price === null) return '0';
-    const rounded = Math.round(price * 100) / 100;
-    if (rounded % 1 === 0) {
-      return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    } else {
-      return rounded.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    }
+  // Format currency using the global currency context
+  const formatCurrency = (amount) => {
+    return formatPrice(amount, { showSymbol: true, showCode: false });
   };
 
   // Calculate penalty and refund amounts
@@ -116,13 +157,15 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
 
   // Generate receipt text for SMS/WhatsApp
   const generateReceiptText = () => {
-    const storeName = 'BizCore POS';
-    const storePhone = '(555) 123-4567';
-    const overdue = isOverdue();
+    const currencySymbol = getCurrencySymbol();
     
-    let text = `${storeName}\n`;
+    let text = `${storeInfo.name}\n`;
+    text += `${storeInfo.address}\n`;
+    text += `Tel: ${storeInfo.phone}\n`;
+    if (storeInfo.email) text += `Email: ${storeInfo.email}\n`;
     text += `Receipt #: ${saleData.receiptNumber}\n`;
     text += `Date: ${new Date(saleData.timestamp).toLocaleString()}\n`;
+    text += `Currency: ${currency.code} (${currencySymbol})\n`;
     
     if (saleData.customer) {
       text += `Customer: ${saleData.customer.name}\n`;
@@ -130,22 +173,22 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
     
     text += `\nITEMS:\n`;
     saleData.items.forEach(item => {
-      text += `${item.name} x${item.quantity} - $${formatPrice(item.price * item.quantity)}\n`;
+      text += `${item.name} x${item.quantity} - ${currencySymbol}${formatCurrency(item.price * item.quantity)}\n`;
     });
     
-    text += `\nSubtotal: $${formatPrice(saleData.subtotal)}\n`;
-    if (saleData.discount > 0) text += `Discount: -$${formatPrice(saleData.discount)}\n`;
-    text += `Tax: $${formatPrice(saleData.tax)}\n`;
-    text += `TOTAL: $${formatPrice(saleData.total)}\n`;
+    text += `\nSubtotal: ${currencySymbol}${formatCurrency(saleData.subtotal)}\n`;
+    if (saleData.discount > 0) text += `Discount: -${currencySymbol}${formatCurrency(saleData.discount)}\n`;
+    text += `Tax (${storeInfo.taxRate}%): ${currencySymbol}${formatCurrency(saleData.tax)}\n`;
+    text += `TOTAL: ${currencySymbol}${formatCurrency(saleData.total)}\n`;
     
-    text += `\nPaid: $${formatPrice(saleData.amount)}\n`;
+    text += `\nPaid: ${currencySymbol}${formatCurrency(saleData.amount)}\n`;
     if (saleData.remaining > 0) {
-      text += `Remaining: $${formatPrice(saleData.remaining)}\n`;
+      text += `Remaining: ${currencySymbol}${formatCurrency(saleData.remaining)}\n`;
       text += `Due Date: ${new Date(saleData.dueDate).toLocaleDateString()}\n`;
     }
     
     if (saleData.status !== 'completed') {
-      text += `\n⚠️ ${overdue ? 'OVERDUE' : 'Payment Pending'}\n`;
+      text += `\n⚠️ ${isOverdue() ? 'OVERDUE' : 'Payment Pending'}\n`;
       text += `Penalty if late: ${saleData.penaltyRate}%\n`;
       text += `Refund if fails: ${saleData.refundRate}%\n`;
     }
@@ -225,7 +268,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
     setShareMessage('Preparing email...');
     
     try {
-      const subject = `Receipt ${saleData.receiptNumber}`;
+      const subject = `Receipt ${saleData.receiptNumber} from ${storeInfo.name}`;
       const body = generateReceiptText();
       
       window.location.href = `mailto:${saleData.customer.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
@@ -418,19 +461,18 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
     }
   };
 
-  // Handle print (unchanged)
+  // Handle print with store settings
   const handlePrint = () => {
     const printWindow = window.open('', '_blank');
     if (printWindow) {
-      const storeName = 'BizCore POS';
-      const storeAddress = '123 Main Street';
-      const storePhone = '(555) 123-4567';
       const overdue = isOverdue();
+      const currencySymbol = getCurrencySymbol();
+      const currencyCode = currency.code;
       
       printWindow.document.write(`
         <html>
           <head>
-            <title>Receipt ${saleData.receiptNumber}</title>
+            <title>Receipt ${saleData.receiptNumber} - ${storeInfo.name}</title>
             <style>
               body { 
                 font-family: 'Courier New', monospace; 
@@ -454,6 +496,11 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
               .store-details {
                 font-size: 10px;
                 color: #555;
+              }
+              .currency-info {
+                font-size: 8px;
+                color: #777;
+                margin-top: 2px;
               }
               .receipt-info {
                 margin: 15px 0;
@@ -603,9 +650,11 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
           </head>
           <body>
             <div class="header">
-              <div class="store-name">${storeName}</div>
-              <div class="store-details">${storeAddress}</div>
-              <div class="store-details">Tel: ${storePhone}</div>
+              <div class="store-name">${storeInfo.name}</div>
+              <div class="store-details">${storeInfo.address}</div>
+              <div class="store-details">Tel: ${storeInfo.phone}</div>
+              ${storeInfo.email ? `<div class="store-details">Email: ${storeInfo.email}</div>` : ''}
+              <div class="currency-info">Currency: ${currencyCode} (${currencySymbol})</div>
             </div>
 
             <div class="receipt-info">
@@ -619,7 +668,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
               </div>
               <div>
                 <span>Cashier:</span>
-                <span>John Doe</span>
+                <span>${saleData.cashier || 'System'}</span>
               </div>
             </div>
 
@@ -651,15 +700,15 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                 </div>
                 <div class="schedule-row" style="margin-top: 5px; padding-top: 5px; border-top: 1px dashed #ff9966;">
                   <span>Amount Paid:</span>
-                  <span>$${formatPrice(saleData.amount)}</span>
+                  <span>${currencySymbol}${formatCurrency(saleData.amount)}</span>
                 </div>
                 <div class="schedule-row">
                   <span>Penalty (${saleData.penaltyRate}%):</span>
-                  <span style="color: #cc0000;">-$${formatPrice(penaltyAmount)}</span>
+                  <span style="color: #cc0000;">-${currencySymbol}${formatCurrency(penaltyAmount)}</span>
                 </div>
                 <div class="schedule-row" style="font-weight: bold;">
                   <span>Refund Amount:</span>
-                  <span style="color: #006600;">$${formatPrice(refundAmount)}</span>
+                  <span style="color: #006600;">${currencySymbol}${formatCurrency(refundAmount)}</span>
                 </div>
                 <div class="note" style="margin-top: 5px; color: #cc6600;">
                   * If payment fails, only ${saleData.refundRate}% of paid amount is refundable
@@ -675,7 +724,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                     <div>${item.name} x${item.quantity}</div>
                     <div class="item-sku">SKU: ${item.sku}</div>
                   </div>
-                  <div>$${formatPrice(item.price * item.quantity)}</div>
+                  <div>${currencySymbol}${formatCurrency(item.price * item.quantity)}</div>
                 </div>
               `).join('')}
             </div>
@@ -683,21 +732,21 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
             <div class="totals">
               <div class="total-row">
                 <span>Subtotal:</span>
-                <span>$${formatPrice(saleData.subtotal)}</span>
+                <span>${currencySymbol}${formatCurrency(saleData.subtotal)}</span>
               </div>
               ${saleData.discount > 0 ? `
                 <div class="total-row">
                   <span>Discount:</span>
-                  <span>-$${formatPrice(saleData.discount)}</span>
+                  <span>-${currencySymbol}${formatCurrency(saleData.discount)}</span>
                 </div>
               ` : ''}
               <div class="total-row">
-                <span>Tax (10%):</span>
-                <span>$${formatPrice(saleData.tax)}</span>
+                <span>Tax (${storeInfo.taxRate}%):</span>
+                <span>${currencySymbol}${formatCurrency(saleData.tax)}</span>
               </div>
               <div class="grand-total total-row">
                 <span>TOTAL:</span>
-                <span>$${formatPrice(saleData.total)}</span>
+                <span>${currencySymbol}${formatCurrency(saleData.total)}</span>
               </div>
             </div>
 
@@ -708,12 +757,12 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
               </div>
               <div class="total-row">
                 <span>Amount Paid:</span>
-                <span>$${formatPrice(saleData.amount)}</span>
+                <span>${currencySymbol}${formatCurrency(saleData.amount)}</span>
               </div>
               ${saleData.remaining > 0 ? `
                 <div class="total-row">
                   <span>Remaining Balance:</span>
-                  <span>$${formatPrice(saleData.remaining)}</span>
+                  <span>${currencySymbol}${formatCurrency(saleData.remaining)}</span>
                 </div>
                 <div class="total-row">
                   <span>Due Date:</span>
@@ -723,7 +772,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
               ${saleData.change > 0 ? `
                 <div class="total-row">
                   <span>Change:</span>
-                  <span>$${formatPrice(saleData.change)}</span>
+                  <span>${currencySymbol}${formatCurrency(saleData.change)}</span>
                 </div>
               ` : ''}
             </div>
@@ -736,7 +785,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                   <div class="schedule-title">📅 ${selectedSchedule.type} Plan</div>
                   <div class="schedule-row">
                     <span>Amount:</span>
-                    <span>$${formatPrice(selectedSchedule.amount)}/${selectedSchedule.frequency}</span>
+                    <span>${currencySymbol}${formatCurrency(selectedSchedule.amount)}/${selectedSchedule.frequency}</span>
                   </div>
                   <div class="schedule-row">
                     <span>Duration:</span>
@@ -744,7 +793,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                   </div>
                   <div class="schedule-row">
                     <span>Total:</span>
-                    <span>$${formatPrice(selectedSchedule.total)}</span>
+                    <span>${currencySymbol}${formatCurrency(selectedSchedule.total)}</span>
                   </div>
                   <div class="schedule-row">
                     <span>First Due Date:</span>
@@ -770,7 +819,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                 <div class="schedule-title" style="color: #6600cc;">📝 Credit Terms</div>
                 <div class="schedule-row">
                   <span>Remaining Balance:</span>
-                  <span>$${formatPrice(saleData.remaining)}</span>
+                  <span>${currencySymbol}${formatCurrency(saleData.remaining)}</span>
                 </div>
                 <div class="schedule-row">
                   <span>Due Date:</span>
@@ -798,8 +847,9 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
 
             <div class="footer">
               <p>Thank you for your business!</p>
-              <p style="font-size: 8px; margin-top: 5px;">GST: 12345-6789</p>
+              <p style="font-size: 8px; margin-top: 5px;">GST: ${storeInfo.gst || '12345-6789'}</p>
               <p style="font-size: 8px;">Transaction ID: ${saleData.id}</p>
+              <p style="font-size: 7px; margin-top: 3px;">Currency: ${currencyCode} (${currencySymbol})</p>
             </div>
 
             <div class="terms">
@@ -832,11 +882,17 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
 
         {/* Receipt Content */}
         <div ref={receiptRef} className="p-4 font-mono text-sm space-y-3">
-          {/* Store Info */}
+          {/* Store Info - Using dynamic store settings */}
           <div className="text-center">
-            <h3 className={`text-lg font-bold ${currentTheme.colors.text}`}>BizCore POS</h3>
-            <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>123 Main Street</p>
-            <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>Tel: (555) 123-4567</p>
+            <h3 className={`text-lg font-bold ${currentTheme.colors.text}`}>{storeInfo.name}</h3>
+            <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>{storeInfo.address}</p>
+            <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>Tel: {storeInfo.phone}</p>
+            {storeInfo.email && (
+              <p className={`text-[8px] ${currentTheme.colors.textSecondary}`}>Email: {storeInfo.email}</p>
+            )}
+            <p className={`text-[8px] ${currentTheme.colors.textMuted} mt-0.5`}>
+              {currency.code} ({getCurrencySymbol()}) - {currency.name}
+            </p>
           </div>
 
           {/* Receipt Info */}
@@ -851,7 +907,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
             </div>
             <div className="flex justify-between text-[10px]">
               <span className={currentTheme.colors.textSecondary}>Cashier:</span>
-              <span className={currentTheme.colors.text}>John Doe</span>
+              <span className={currentTheme.colors.text}>{saleData.cashier || 'System'}</span>
             </div>
           </div>
 
@@ -909,15 +965,15 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                 <div className="space-y-1 mt-1">
                   <div className="flex justify-between text-[7px]">
                     <span className={currentTheme.colors.textSecondary}>Paid Amount:</span>
-                    <span className="text-green-600">$${formatPrice(saleData.amount)}</span>
+                    <span className="text-green-600">{formatCurrency(saleData.amount)}</span>
                   </div>
                   <div className="flex justify-between text-[7px]">
                     <span className={currentTheme.colors.textSecondary}>Penalty if Late ({saleData.penaltyRate}%):</span>
-                    <span className="text-red-600">-$${formatPrice(penaltyAmount)}</span>
+                    <span className="text-red-600">-{formatCurrency(penaltyAmount)}</span>
                   </div>
                   <div className="flex justify-between text-[7px] font-medium">
                     <span className={currentTheme.colors.textSecondary}>Refund if Failed:</span>
-                    <span className="text-green-600">$${formatPrice(refundAmount)}</span>
+                    <span className="text-green-600">{formatCurrency(refundAmount)}</span>
                   </div>
                   <div className="text-[6px] text-gray-500 mt-1 pt-1 border-t border-dashed">
                     * {saleData.refundRate}% of paid amount refundable if payment fails
@@ -947,7 +1003,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                   <span className={currentTheme.colors.text}>{item.name}</span>
                   <span className={`ml-1 ${currentTheme.colors.textSecondary}`}>x{item.quantity}</span>
                 </div>
-                <span className={currentTheme.accentText}>${formatPrice(item.price * item.quantity)}</span>
+                <span className={currentTheme.accentText}>{formatCurrency(item.price * item.quantity)}</span>
               </div>
             ))}
           </div>
@@ -956,21 +1012,21 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
           <div className={`border-t ${currentTheme.colors.border} pt-2 space-y-0.5`}>
             <div className="flex justify-between text-[10px]">
               <span className={currentTheme.colors.textSecondary}>Subtotal:</span>
-              <span className={currentTheme.colors.text}>$${formatPrice(saleData.subtotal)}</span>
+              <span className={currentTheme.colors.text}>{formatCurrency(saleData.subtotal)}</span>
             </div>
             {saleData.discount > 0 && (
               <div className="flex justify-between text-[10px]">
                 <span className={currentTheme.colors.textSecondary}>Discount:</span>
-                <span className="text-green-600">-$${formatPrice(saleData.discount)}</span>
+                <span className="text-green-600">-{formatCurrency(saleData.discount)}</span>
               </div>
             )}
             <div className="flex justify-between text-[10px]">
-              <span className={currentTheme.colors.textSecondary}>Tax (10%):</span>
-              <span className={currentTheme.colors.text}>$${formatPrice(saleData.tax)}</span>
+              <span className={currentTheme.colors.textSecondary}>Tax ({storeInfo.taxRate}%):</span>
+              <span className={currentTheme.colors.text}>{formatCurrency(saleData.tax)}</span>
             </div>
             <div className="flex justify-between text-xs font-bold pt-1 border-t border-dashed">
               <span className={currentTheme.colors.text}>TOTAL:</span>
-              <span className={currentTheme.accentText}>$${formatPrice(saleData.total)}</span>
+              <span className={currentTheme.accentText}>{formatCurrency(saleData.total)}</span>
             </div>
           </div>
 
@@ -982,13 +1038,13 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
             </div>
             <div className="flex justify-between text-[9px]">
               <span className={currentTheme.colors.textSecondary}>Amount Paid:</span>
-              <span className="text-green-600 font-medium">$${formatPrice(saleData.amount)}</span>
+              <span className="text-green-600 font-medium">{formatCurrency(saleData.amount)}</span>
             </div>
             {saleData.remaining > 0 && (
               <>
                 <div className="flex justify-between text-[9px]">
                   <span className={currentTheme.colors.textSecondary}>Remaining Balance:</span>
-                  <span className="text-amber-600 font-medium">$${formatPrice(saleData.remaining)}</span>
+                  <span className="text-amber-600 font-medium">{formatCurrency(saleData.remaining)}</span>
                 </div>
                 <div className="flex justify-between text-[9px]">
                   <span className={currentTheme.colors.textSecondary}>Due Date:</span>
@@ -1009,7 +1065,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
             {saleData.change > 0 && (
               <div className="flex justify-between text-[9px]">
                 <span className={currentTheme.colors.textSecondary}>Change:</span>
-                <span className={currentTheme.colors.text}>$${formatPrice(saleData.change)}</span>
+                <span className={currentTheme.colors.text}>{formatCurrency(saleData.change)}</span>
               </div>
             )}
           </div>
@@ -1029,13 +1085,13 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                 </p>
                 <div className="grid grid-cols-2 gap-1 mt-1 text-[7px]">
                   <span className={currentTheme.colors.textSecondary}>Amount:</span>
-                  <span className="text-right">${formatPrice(selectedSchedule.amount)}/{selectedSchedule.frequency}</span>
+                  <span className="text-right">{formatCurrency(selectedSchedule.amount)}/{selectedSchedule.frequency}</span>
                   
                   <span className={currentTheme.colors.textSecondary}>Duration:</span>
                   <span className="text-right">{selectedSchedule.count} {selectedSchedule.frequency}s</span>
                   
                   <span className={currentTheme.colors.textSecondary}>Total:</span>
-                  <span className="text-right">${formatPrice(selectedSchedule.total)}</span>
+                  <span className="text-right">{formatCurrency(selectedSchedule.total)}</span>
                   
                   <span className={currentTheme.colors.textSecondary}>First Due:</span>
                   <span className="text-right">{selectedSchedule.dueDate}</span>
@@ -1058,7 +1114,7 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
                 📝 Credit Terms
               </p>
               <p className={`text-[8px] ${currentTheme.colors.textSecondary}`}>
-                Remaining: <span className="font-medium text-purple-600">$${formatPrice(saleData.remaining)}</span>
+                Remaining: <span className="font-medium text-purple-600">{formatCurrency(saleData.remaining)}</span>
               </p>
               <p className={`text-[8px] ${currentTheme.colors.textSecondary}`}>
                 Due: {new Date(saleData.dueDate).toLocaleDateString()}
@@ -1082,8 +1138,11 @@ export default function Receipt({ sale, onClose, onPrint, onEmail, onSms }) {
           {/* Footer */}
           <div className={`pt-2 border-t ${currentTheme.colors.border} text-center`}>
             <p className={`text-[9px] ${currentTheme.colors.text}`}>Thank you for your business!</p>
-            <p className={`text-[6px] ${currentTheme.colors.textSecondary} mt-0.5`}>GST: 12345-6789</p>
+            <p className={`text-[6px] ${currentTheme.colors.textSecondary} mt-0.5`}>GST: {storeInfo.gst || '12345-6789'}</p>
             <p className={`text-[6px] ${currentTheme.colors.textSecondary}`}>ID: {saleData.id.slice(-8)}</p>
+            <p className={`text-[6px] ${currentTheme.colors.textMuted} mt-0.5`}>
+              {currency.code} ({getCurrencySymbol()})
+            </p>
             {saleData.status !== 'completed' && (
               <p className={`text-[5px] ${currentTheme.colors.textSecondary} mt-1`}>
                 * {saleData.penaltyRate}% penalty applies for late payment. {saleData.refundRate}% refund if payment fails.

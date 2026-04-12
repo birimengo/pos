@@ -1,6 +1,7 @@
+// backend/routes/sync.js
 import express from 'express';
 import * as syncController from '../controllers/syncController.js';
-import auth from '../middleware/auth.js';
+import auth from '../middleware/auth.js';  // Use default import
 
 const router = express.Router();
 

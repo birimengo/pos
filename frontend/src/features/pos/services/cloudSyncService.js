@@ -54,10 +54,22 @@ class CloudSyncService {
     }
   }
 
+  // Check if user is authenticated
+  isAuthenticated() {
+    const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+    return !!token;
+  }
+
   // ==================== PUSH TO CLOUD ====================
 
   async pushProducts() {
     await this.ensureInitialized();
+    
+    // Skip if not authenticated
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ Not authenticated - skipping product push');
+      return { success: true, count: 0, skipped: true };
+    }
     
     try {
       // Get unsynced products from database
@@ -112,7 +124,7 @@ class CloudSyncService {
           if (result.success) {
             // Mark as synced locally
             product.synced = true;
-            product._id = result.product._id; // Store MongoDB _id
+            product._id = result.product._id;
             product.cloudId = result.product._id;
             product.lastSyncedAt = new Date().toISOString();
             
@@ -122,7 +134,7 @@ class CloudSyncService {
                 const fileName = localPath.split('/').pop();
                 await opfs.deleteFile(fileName, 'products').catch(() => {});
               }
-              product.localImages = []; // Clear local images array
+              product.localImages = [];
             }
             
             await db.put('products', product);
@@ -140,19 +152,22 @@ class CloudSyncService {
     }
   }
 
-  // ==================== FIXED: pushCustomers with duplicate checking ====================
   async pushCustomers() {
     await this.ensureInitialized();
     
+    // Skip if not authenticated
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ Not authenticated - skipping customer push');
+      return { success: true, count: 0, skipped: true };
+    }
+    
     try {
-      // Get unsynced customers from database
       const allCustomers = await db.getAll('customers');
       const unsyncedCustomers = allCustomers.filter(c => !c.synced);
       let pushed = 0;
       
       for (const customer of unsyncedCustomers) {
         try {
-          // DEBUG: Log the raw customer object before cleaning
           console.log('🔍 Raw customer from DB:', {
             id: customer.id,
             _id: customer._id,
@@ -161,75 +176,29 @@ class CloudSyncService {
             allKeys: Object.keys(customer)
           });
 
-          // CRITICAL: Create a completely new object with ONLY the fields that exist in MongoDB schema
           const customerData = {};
           
-          // Add name (required)
-          if (customer.name) {
-            customerData.name = customer.name;
-          }
-          
-          // Add email if it exists
-          if (customer.email) {
-            customerData.email = customer.email;
-          }
-          
-          // Add phone if it exists
-          if (customer.phone) {
-            customerData.phone = customer.phone;
-          }
-          
-          // Add loyaltyPoints if it exists and is a number
+          if (customer.name) customerData.name = customer.name;
+          if (customer.email) customerData.email = customer.email;
+          if (customer.phone) customerData.phone = customer.phone;
           if (customer.loyaltyPoints !== undefined && !isNaN(customer.loyaltyPoints)) {
             customerData.loyaltyPoints = Number(customer.loyaltyPoints);
           }
-          
-          // Add totalSpent if it exists and is a number
           if (customer.totalSpent !== undefined && !isNaN(customer.totalSpent)) {
             customerData.totalSpent = Number(customer.totalSpent);
           }
-          
-          // Add address if it exists
-          if (customer.address) {
-            customerData.address = customer.address;
-          }
-          
-          // Add joinDate if it exists
-          if (customer.joinDate) {
-            customerData.joinDate = customer.joinDate;
-          }
-          
-          // Add lastVisit if it exists
-          if (customer.lastVisit) {
-            customerData.lastVisit = customer.lastVisit;
-          }
-          
-          // Add notes if it exists
-          if (customer.notes) {
-            customerData.notes = customer.notes;
-          }
+          if (customer.address) customerData.address = customer.address;
+          if (customer.joinDate) customerData.joinDate = customer.joinDate;
+          if (customer.lastVisit) customerData.lastVisit = customer.lastVisit;
+          if (customer.notes) customerData.notes = customer.notes;
 
-          console.log('🧹 Cleaned customer data for cloud:', {
-            ...customerData,
-            hasId: 'id' in customerData,
-            has_id: '_id' in customerData
-          });
+          console.log('🧹 Cleaned customer data for cloud:', customerData);
 
-          // Verify no id fields are present
-          if ('id' in customerData) {
-            console.error('❌ CRITICAL: id field still present in customerData!', customerData.id);
-            delete customerData.id;
-          }
-          
-          if ('_id' in customerData) {
-            console.error('❌ CRITICAL: _id field still present in customerData!', customerData._id);
-            delete customerData._id;
-          }
+          if ('id' in customerData) delete customerData.id;
+          if ('_id' in customerData) delete customerData._id;
 
-          // ===== FIXED: Check if customer already exists in cloud =====
           let existingCloudCustomer = null;
           
-          // If we have a cloud ID, try to fetch by ID first
           if (customer._id) {
             try {
               console.log('🔍 Checking for existing customer by ID:', customer._id);
@@ -243,7 +212,6 @@ class CloudSyncService {
             }
           }
           
-          // If not found by ID and we have email, try by email
           if (!existingCloudCustomer && customer.email) {
             try {
               console.log('🔍 Checking for existing customer by email:', customer.email);
@@ -261,32 +229,26 @@ class CloudSyncService {
           let operation = '';
           
           if (existingCloudCustomer) {
-            // UPDATE existing customer - merge data
             operation = 'update';
             console.log('🔄 Updating existing customer with _id:', existingCloudCustomer._id);
             
-            // Preserve and merge important cloud fields
-            // Add new loyalty points to existing total
             if (customerData.loyaltyPoints) {
               customerData.loyaltyPoints = (existingCloudCustomer.loyaltyPoints || 0) + customerData.loyaltyPoints;
             } else {
               customerData.loyaltyPoints = existingCloudCustomer.loyaltyPoints || 0;
             }
             
-            // Add new total spent to existing total
             if (customerData.totalSpent) {
               customerData.totalSpent = (existingCloudCustomer.totalSpent || 0) + customerData.totalSpent;
             } else {
               customerData.totalSpent = existingCloudCustomer.totalSpent || 0;
             }
             
-            // Keep the most recent lastVisit
             if (customerData.lastVisit) {
               const newDate = new Date(customerData.lastVisit);
               const existingDate = existingCloudCustomer.lastVisit ? new Date(existingCloudCustomer.lastVisit) : null;
-              
               if (!existingDate || newDate > existingDate) {
-                // Keep the new date if it's more recent
+                // Keep the new date
               } else {
                 customerData.lastVisit = existingCloudCustomer.lastVisit;
               }
@@ -296,34 +258,29 @@ class CloudSyncService {
             
             result = await api.updateCustomer(existingCloudCustomer._id, customerData);
           } else if (customer._id) {
-            // Try update with stored ID (might be stale)
             operation = 'update-attempt';
             console.log('🔄 Attempting update with stored ID:', customer._id);
             result = await api.updateCustomer(customer._id, customerData);
           } else {
-            // CREATE new customer
             operation = 'create';
             console.log('➕ Creating new customer');
             result = await api.createCustomer(customerData);
           }
           
           if (result.success) {
-            // FIXED: Preserve the local ID when updating
-            // Create a new object that keeps the local 'id' and adds cloud data
             const cloudId = result.customer?._id || result.customer?.id || result.id || result._id;
             
             const updatedCustomer = {
-              ...customer, // Keep all existing fields including the local 'id'
-              _id: cloudId, // Store the MongoDB _id
+              ...customer,
+              _id: cloudId,
               cloudId: cloudId,
               synced: true,
               syncRequired: false,
               lastSyncedAt: new Date().toISOString()
             };
             
-            // Ensure the local 'id' field is preserved (double-check)
             if (!updatedCustomer.id) {
-              updatedCustomer.id = customer.id; // Make sure id is not lost
+              updatedCustomer.id = customer.id;
               console.log('⚠️ Restored missing id:', updatedCustomer.id);
             }
             
@@ -359,15 +316,19 @@ class CloudSyncService {
   async pushTransactions() {
     await this.ensureInitialized();
     
+    // Skip if not authenticated
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ Not authenticated - skipping transaction push');
+      return { success: true, count: 0, skipped: true };
+    }
+    
     try {
-      // Get unsynced transactions from database
       const allTransactions = await db.getAll('transactions');
       const unsyncedTransactions = allTransactions.filter(t => !t.synced);
       let pushed = 0;
       
       for (const transaction of unsyncedTransactions) {
         try {
-          // DEBUG: Log raw transaction
           console.log('🔍 Raw transaction from DB:', {
             id: transaction.id,
             receiptNumber: transaction.receiptNumber,
@@ -376,10 +337,8 @@ class CloudSyncService {
             customer_id: transaction.customer?._id
           });
 
-          // Create a clean copy for cloud sync
           const cleanTransaction = {};
           
-          // Add basic fields
           cleanTransaction.receiptNumber = transaction.receiptNumber;
           cleanTransaction.subtotal = transaction.subtotal;
           cleanTransaction.discount = transaction.discount || 0;
@@ -389,42 +348,21 @@ class CloudSyncService {
           cleanTransaction.status = transaction.status || 'completed';
           cleanTransaction.createdAt = transaction.createdAt || new Date().toISOString();
           
-          // Add tax if it exists
-          if (transaction.tax) {
-            cleanTransaction.tax = transaction.tax;
-          }
+          if (transaction.tax) cleanTransaction.tax = transaction.tax;
+          if (transaction.notes) cleanTransaction.notes = transaction.notes;
           
-          // Add notes if they exist
-          if (transaction.notes) {
-            cleanTransaction.notes = transaction.notes;
-          }
-          
-          // Clean customer data if present - WITHOUT ANY ID FIELDS
           if (transaction.customer && transaction.customer.name) {
             const cleanCustomer = {};
+            if (transaction.customer.name) cleanCustomer.name = transaction.customer.name;
+            if (transaction.customer.email) cleanCustomer.email = transaction.customer.email;
+            if (transaction.customer.loyaltyPoints) cleanCustomer.loyaltyPoints = transaction.customer.loyaltyPoints;
             
-            if (transaction.customer.name) {
-              cleanCustomer.name = transaction.customer.name;
-            }
-            
-            if (transaction.customer.email) {
-              cleanCustomer.email = transaction.customer.email;
-            }
-            
-            if (transaction.customer.loyaltyPoints) {
-              cleanCustomer.loyaltyPoints = transaction.customer.loyaltyPoints;
-            }
-            
-            // Only add customer if it has at least a name
             if (Object.keys(cleanCustomer).length > 0) {
               cleanTransaction.customer = cleanCustomer;
-              
-              // DEBUG: Log cleaned customer
               console.log('🧹 Cleaned transaction customer:', cleanCustomer);
             }
           }
           
-          // Clean items - remove any id fields
           if (transaction.items && Array.isArray(transaction.items)) {
             cleanTransaction.items = transaction.items.map(item => {
               const cleanItem = {
@@ -450,16 +388,14 @@ class CloudSyncService {
           const result = await api.syncTransaction(cleanTransaction);
           
           if (result.success) {
-            // FIXED: Preserve the local ID when updating
             const updatedTransaction = {
-              ...transaction, // Keep all existing fields including the local 'id'
+              ...transaction,
               synced: true,
               cloudId: result.id,
               _id: result.id,
               lastSyncedAt: new Date().toISOString()
             };
             
-            // Ensure the local 'id' field is preserved
             if (!updatedTransaction.id) {
               updatedTransaction.id = transaction.id;
               console.log('⚠️ Restored missing transaction id:', updatedTransaction.id);
@@ -520,6 +456,11 @@ class CloudSyncService {
   async pullProducts() {
     await this.ensureInitialized();
     
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ Not authenticated - skipping product pull');
+      return { success: true, count: 0, skipped: true };
+    }
+    
     try {
       const result = await api.getAllProducts();
       let pulled = 0;
@@ -529,17 +470,15 @@ class CloudSyncService {
         
         for (const cloudProduct of result.products) {
           try {
-            // Check if product exists locally by SKU or MongoDB _id
             const allProducts = await db.getAll('products');
             const existingProduct = allProducts.find(p => 
               p.sku === cloudProduct.sku || p._id === cloudProduct._id
             );
             
-            // Prepare local product data
             const localProduct = {
               ...cloudProduct,
               id: existingProduct?.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-              _id: cloudProduct._id, // Store MongoDB _id
+              _id: cloudProduct._id,
               synced: true,
               syncRequired: false,
               lastSyncedAt: new Date().toISOString(),
@@ -547,18 +486,15 @@ class CloudSyncService {
               cloudMainImage: cloudProduct.mainImage || cloudProduct.cloudMainImage
             };
             
-            // Remove any fields that might cause conflicts
-            delete localProduct.__v; // Remove Mongoose version field
+            delete localProduct.__v;
             
             if (existingProduct) {
-              // Update existing - preserve local images if they exist
               await db.put('products', {
                 ...existingProduct,
                 ...localProduct,
-                localImages: existingProduct.localImages || [] // Keep local images
+                localImages: existingProduct.localImages || []
               });
             } else {
-              // Create new
               await db.put('products', localProduct);
             }
             pulled++;
@@ -580,6 +516,11 @@ class CloudSyncService {
   async pullCustomers() {
     await this.ensureInitialized();
     
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ Not authenticated - skipping customer pull');
+      return { success: true, count: 0, skipped: true };
+    }
+    
     try {
       const result = await api.getAllCustomers();
       let pulled = 0;
@@ -589,34 +530,29 @@ class CloudSyncService {
         
         for (const cloudCustomer of result.customers) {
           try {
-            // Check if customer exists locally by email or MongoDB _id
             const allCustomers = await db.getAll('customers');
             const existingCustomer = allCustomers.find(c => 
               c.email === cloudCustomer.email || c._id === cloudCustomer._id
             );
             
-            // Prepare local customer data - preserve local ID if exists
             const localCustomer = {
               ...cloudCustomer,
-              _id: cloudCustomer._id, // Store MongoDB _id
-              id: existingCustomer?.id || `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Local ID for IndexedDB
+              _id: cloudCustomer._id,
+              id: existingCustomer?.id || `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
               synced: true,
               syncRequired: false,
               lastSyncedAt: new Date().toISOString()
             };
             
-            // Remove any field that might cause conflicts
-            delete localCustomer.__v; // Remove Mongoose version field
+            delete localCustomer.__v;
             
             if (existingCustomer) {
-              // Update existing - preserve local ID but update cloud data
               await db.put('customers', {
                 ...existingCustomer,
                 ...localCustomer,
-                id: existingCustomer.id // Keep the original local ID
+                id: existingCustomer.id
               });
             } else {
-              // Create new
               await db.put('customers', localCustomer);
             }
             pulled++;
@@ -638,7 +574,19 @@ class CloudSyncService {
   async pullTransactions() {
     await this.ensureInitialized();
     
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ Not authenticated - skipping transaction pull');
+      return { success: true, count: 0, skipped: true };
+    }
+    
     try {
+      // Check if we have a store selected before pulling
+      const currentStore = await db.getCurrentStoreObject();
+      if (!currentStore) {
+        console.log('⚠️ No store selected - skipping transaction pull');
+        return { success: true, count: 0, skipped: true };
+      }
+      
       const result = await api.getAllTransactions();
       let pulled = 0;
       
@@ -647,14 +595,12 @@ class CloudSyncService {
         
         for (const cloudTransaction of result.transactions) {
           try {
-            // Check if transaction exists locally by receipt number
             const allTransactions = await db.getAll('transactions');
             const existingTransaction = allTransactions.find(t => 
               t.receiptNumber === cloudTransaction.receiptNumber
             );
             
             if (!existingTransaction) {
-              // Prepare local transaction data
               const localTransaction = {
                 ...cloudTransaction,
                 id: `tr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -665,7 +611,6 @@ class CloudSyncService {
                 createdAt: cloudTransaction.createdAt || new Date().toISOString()
               };
               
-              // Remove Mongoose version field
               delete localTransaction.__v;
               
               await db.put('transactions', localTransaction);
@@ -721,9 +666,21 @@ class CloudSyncService {
   // ==================== FULL SYNC ====================
 
   async fullSync() {
+    if (!this.isAuthenticated()) {
+      console.log('⚠️ User not authenticated - skipping sync');
+      return { success: false, error: 'Authentication required', skipped: true };
+    }
+
     if (this.syncInProgress) {
       console.log('⏳ Sync already in progress, skipping...');
       return { success: false, error: 'Sync already in progress' };
+    }
+
+    // Check if we have a store selected
+    const currentStore = await db.getCurrentStoreObject();
+    if (!currentStore) {
+      console.log('⚠️ No store selected - skipping sync');
+      return { success: false, error: 'No store selected', skipped: true };
     }
 
     this.syncInProgress = true;
@@ -731,11 +688,9 @@ class CloudSyncService {
     console.log('🔄 Starting full sync...');
 
     try {
-      // First push local changes
       console.log('📤 Pushing local changes to cloud...');
       const pushResult = await this.pushToCloud();
       
-      // Then pull cloud changes
       console.log('📥 Pulling cloud changes...');
       const pullResult = await this.pullFromCloud();
       
@@ -780,10 +735,8 @@ class CloudSyncService {
       
       if (options.clearLocal) {
         console.log('🗑️ Clearing all local data...');
-        // Clear all local data
         await db.clearAllStores();
         
-        // Clear OPFS images
         const productImages = await opfs.listFiles('products');
         for (const image of productImages) {
           await opfs.deleteFile(image.name, 'products');
@@ -791,7 +744,6 @@ class CloudSyncService {
         console.log(`✅ Cleared ${productImages.length} local images`);
       }
 
-      // Pull all data from cloud
       console.log('📥 Pulling all data from cloud...');
       const [products, customers, transactions] = await Promise.all([
         api.getAllProducts(),
@@ -801,7 +753,6 @@ class CloudSyncService {
 
       let restored = 0;
 
-      // Restore products
       if (products.success && products.products) {
         console.log(`📦 Restoring ${products.products.length} products...`);
         for (const product of products.products) {
@@ -818,7 +769,6 @@ class CloudSyncService {
         }
       }
 
-      // Restore customers
       if (customers.success && customers.customers) {
         console.log(`👥 Restoring ${customers.customers.length} customers...`);
         for (const customer of customers.customers) {
@@ -834,7 +784,6 @@ class CloudSyncService {
         }
       }
 
-      // Restore transactions
       if (transactions.success && transactions.transactions) {
         console.log(`🧾 Restoring ${transactions.transactions.length} transactions...`);
         for (const transaction of transactions.transactions) {

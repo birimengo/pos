@@ -1,41 +1,99 @@
-import mongoose from 'mongoose';
+// backend/middleware/auth.js
+import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
 
-const customerSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, sparse: true, unique: true },
-  phone: String,
-  address: String,
-  loyaltyPoints: { type: Number, default: 0 },
-  totalSpent: { type: Number, default: 0 },
-  joinDate: { type: Date, default: Date.now },
-  lastVisit: Date,
-  birthDate: Date,
-  notes: String,
-  storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
-  tags: [String],
-  updatedAt: { type: Date, default: Date.now }
-}, {
-  id: false,
-  toJSON: {
-    transform: function(doc, ret) {
-      delete ret.__v;
-      return ret;
+export const auth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'No authentication token provided'
+      });
     }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const user = await User.findById(decoded.id).select('-password');
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        error: 'Account is deactivated'
+      });
+    }
+
+    req.user = user;
+    req.token = token;
+    next();
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid token'
+      });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Token expired'
+      });
+    }
+    console.error('Auth error:', error);
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication failed'
+    });
   }
-});
+};
 
-// CORRECT FIX: Use function without parameters
-// Mongoose automatically passes 'next' but we don't need to use it
-customerSchema.pre('save', function() {
-  this.updatedAt = Date.now();
-  // No need to call any callback function
-});
+export const requireAdmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication required'
+    });
+  }
 
-// Alternative if you need to use the callback:
-// customerSchema.pre('save', function(next) {
-//   this.updatedAt = Date.now();
-//   next();
-// });
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'Admin access required'
+    });
+  }
 
-const Customer = mongoose.model('Customer', customerSchema);
-export default Customer;
+  next();
+};
+
+export const requirePermission = (permission) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    if (req.user.role === 'admin') {
+      return next();
+    }
+
+    if (!req.user.permissions || !req.user.permissions.includes(permission)) {
+      return res.status(403).json({
+        success: false,
+        error: `Access denied. Requires ${permission} permission`
+      });
+    }
+
+    next();
+  };
+};
+
+export default auth;

@@ -1,11 +1,13 @@
-// src/features/pos/inventory/InventoryDashboard.jsx (Card View with Image Carousel)
+// src/features/pos/inventory/InventoryDashboard.jsx
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useCurrency } from '../context/CurrencyContext';
 import { useInventory } from '../context/InventoryContext';
 import { productService } from '../services/productService';
 import { Icons } from '../../../components/ui/Icons';
 import ProductForm from './ProductForm';
 import StockAdjustmentModal from './StockAdjustmentModal';
+import StockHistoryModal from './StockHistoryModal';
 import { opfs } from '../services/opfsService';
 import SyncStatusIndicator from '../components/SyncStatusIndicator';
 import CategoryManager from '../components/CategoryManager';
@@ -21,9 +23,11 @@ export default function InventoryDashboard() {
   const [onlineStatus, setOnlineStatus] = useState(navigator.onLine);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState({});
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   
   const { theme, getTheme } = useTheme();
   const { state, dispatch } = useInventory();
+  const { formatPrice, currency, getCurrencySymbol } = useCurrency();
   const currentTheme = getTheme(theme);
 
   // Monitor online status
@@ -154,6 +158,15 @@ export default function InventoryDashboard() {
 
   const lowStockCount = state.products.filter(p => p.stock <= 10).length;
 
+  // Calculate total inventory value with proper currency formatting
+  const totalInventoryValue = useMemo(() => {
+    return state.products.reduce((sum, p) => sum + ((p.cost || 0) * p.stock), 0);
+  }, [state.products]);
+
+  const formatCurrencyValue = (amount) => {
+    return formatPrice(amount, { showSymbol: true, showCode: false });
+  };
+
   // Handle sync all pending items
   const handleSyncAll = async () => {
     if (!onlineStatus) {
@@ -236,6 +249,12 @@ export default function InventoryDashboard() {
     setView('adjust');
   };
 
+  // Handle view stock history
+  const handleViewHistory = (product) => {
+    setSelectedProduct(product);
+    setShowHistoryModal(true);
+  };
+
   // Handle edit
   const handleEdit = (product) => {
     setSelectedProduct(product);
@@ -266,10 +285,48 @@ export default function InventoryDashboard() {
   };
 
   // Handle stock adjustment complete
-  const handleStockAdjustComplete = (id, change, reason) => {
-    dispatch({ type: 'UPDATE_STOCK', payload: { id, change } });
-    setView('list');
-    setSelectedProduct(null);
+  const handleStockAdjustComplete = async (id, change, details) => {
+    try {
+      // Update local state
+      dispatch({ type: 'UPDATE_STOCK', payload: { id, change } });
+      
+      // Get the product to record stock history
+      const product = state.products.find(p => p.id === id);
+      
+      if (product) {
+        // Record locally in IndexedDB for immediate display (always do this first)
+        await productService.recordLocalStockHistory({
+          productId: product._id || product.id,
+          productName: product.name,
+          productSku: product.sku,
+          previousStock: details.previousStock,
+          newStock: details.newStock,
+          quantityChange: change,
+          adjustmentType: details.adjustmentType,
+          reason: details.reason,
+          notes: details.notes,
+          performedBy: 'system',
+          createdAt: new Date().toISOString()
+        });
+        console.log('✅ Stock history recorded locally:', details.adjustmentType);
+      }
+      
+      // Update via productService for sync
+      await productService.updateProductStock(id, change);
+      
+      setView('list');
+      setSelectedProduct(null);
+      
+      // Show success message with adjustment type
+      const actionText = change > 0 ? 'added' : 'removed';
+      const typeText = details.adjustmentType ? details.adjustmentType.toUpperCase() : 'Stock';
+      alert(`${typeText}: ${Math.abs(change)} units ${actionText}`);
+    } catch (error) {
+      console.error('Failed to adjust stock:', error);
+      alert('Stock adjusted locally but failed to record history');
+      setView('list');
+      setSelectedProduct(null);
+    }
   };
 
   // Show loading state
@@ -387,6 +444,15 @@ export default function InventoryDashboard() {
         </div>
       </div>
 
+      {/* Currency Info Bar */}
+      <div className={`${currentTheme.colors.accentLight} rounded-lg p-2 text-center border ${currentTheme.colors.border}`}>
+        <p className={`text-xs ${currentTheme.colors.textSecondary} flex items-center justify-center gap-2 flex-wrap`}>
+          <span>💰 Currency: {currency.code}</span>
+          <span>💱 Symbol: {getCurrencySymbol()}</span>
+          <span>📊 Format: {currency.position === 'after' ? 'X' + getCurrencySymbol() : getCurrencySymbol() + 'X'}</span>
+        </p>
+      </div>
+
       {/* Compact Stats Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
         <div className={`${currentTheme.colors.card} rounded-lg p-2 sm:p-3 border ${currentTheme.colors.border}`}>
@@ -398,9 +464,9 @@ export default function InventoryDashboard() {
           <p className={`text-lg sm:text-xl font-bold text-yellow-600`}>{lowStockCount}</p>
         </div>
         <div className={`${currentTheme.colors.card} rounded-lg p-2 sm:p-3 border ${currentTheme.colors.border}`}>
-          <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Value</p>
+          <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Inventory Value</p>
           <p className={`text-lg sm:text-xl font-bold ${currentTheme.accentText}`}>
-            ${(state.products.reduce((sum, p) => sum + (p.cost * p.stock), 0) / 1000).toFixed(1)}k
+            {formatCurrencyValue(totalInventoryValue)}
           </p>
         </div>
         <div className={`${currentTheme.colors.card} rounded-lg p-2 sm:p-3 border ${currentTheme.colors.border}`}>
@@ -547,11 +613,15 @@ export default function InventoryDashboard() {
                   <div className="grid grid-cols-2 gap-2 mb-3 text-xs sm:text-sm">
                     <div>
                       <p className={`${currentTheme.colors.textMuted}`}>Price</p>
-                      <p className={`font-bold ${currentTheme.accentText}`}>${product.price?.toFixed(2)}</p>
+                      <p className={`font-bold ${currentTheme.accentText}`}>
+                        {formatCurrencyValue(product.price || 0)}
+                      </p>
                     </div>
                     <div>
                       <p className={`${currentTheme.colors.textMuted}`}>Cost</p>
-                      <p className={currentTheme.colors.text}>${product.cost?.toFixed(2)}</p>
+                      <p className={currentTheme.colors.text}>
+                        {formatCurrencyValue(product.cost || 0)}
+                      </p>
                     </div>
                     <div>
                       <p className={`${currentTheme.colors.textMuted}`}>Stock</p>
@@ -570,6 +640,36 @@ export default function InventoryDashboard() {
                     </div>
                   </div>
 
+                  {/* Profit Margin Indicator */}
+                  {product.cost > 0 && product.price > 0 && (
+                    <div className="mb-2">
+                      <div className="flex justify-between text-[10px] mb-0.5">
+                        <span className={currentTheme.colors.textMuted}>Margin:</span>
+                        <span className={`font-medium ${
+                          ((product.price - product.cost) / product.price * 100) >= 30 
+                            ? 'text-green-600' 
+                            : ((product.price - product.cost) / product.price * 100) >= 15
+                              ? 'text-yellow-600'
+                              : 'text-red-600'
+                        }`}>
+                          {((product.price - product.cost) / product.price * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-1">
+                        <div 
+                          className={`h-1 rounded-full ${
+                            ((product.price - product.cost) / product.price * 100) >= 30 
+                              ? 'bg-green-500' 
+                              : ((product.price - product.cost) / product.price * 100) >= 15
+                                ? 'bg-yellow-500'
+                                : 'bg-red-500'
+                          }`}
+                          style={{ width: `${Math.min(100, ((product.price - product.cost) / product.price * 100))}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex justify-between items-center pt-2 border-t border-gray-200 dark:border-gray-700">
                     <p className={`text-xs ${currentTheme.colors.textMuted} truncate max-w-[100px]`} title={product.supplier}>
                       {product.supplier || 'No supplier'}
@@ -582,6 +682,14 @@ export default function InventoryDashboard() {
                         disabled={syncing}
                       >
                         <Icons.refresh className="text-sm sm:text-base" />
+                      </button>
+                      <button
+                        onClick={() => handleViewHistory(product)}
+                        className="p-1.5 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg text-purple-600"
+                        title="View Stock History"
+                        disabled={syncing}
+                      >
+                        <Icons.history className="text-sm sm:text-base" />
                       </button>
                       <button
                         onClick={() => handleEdit(product)}
@@ -639,6 +747,17 @@ export default function InventoryDashboard() {
             setSelectedProduct(null);
           }}
           onAdjust={handleStockAdjustComplete}
+        />
+      )}
+
+      {/* Stock History Modal */}
+      {showHistoryModal && selectedProduct && (
+        <StockHistoryModal
+          product={selectedProduct}
+          onClose={() => {
+            setShowHistoryModal(false);
+            setSelectedProduct(null);
+          }}
         />
       )}
 

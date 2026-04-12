@@ -48,16 +48,12 @@ class TransactionService {
       }));
 
       const total = transactionData.total;
-      // Use paid amount if provided, otherwise use initialPayment or total
       const paid = transactionData.paid !== undefined 
         ? transactionData.paid 
         : (transactionData.initialPayment || total);
       
-      // Calculate remaining balance
       const isCreditOrInstallment = transactionData.isCredit || transactionData.isInstallment;
-      const remaining = isCreditOrInstallment 
-        ? total - paid 
-        : 0;
+      const remaining = isCreditOrInstallment ? total - paid : 0;
 
       console.log('💾 Saving transaction with:', {
         total,
@@ -90,6 +86,7 @@ class TransactionService {
         isCredit: transactionData.isCredit || false,
         fullyPaid: remaining <= 0,
         creditSettled: remaining <= 0,
+        returnedItems: transactionData.returnedItems || [],
         paymentHistory: [{
           id: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           amount: paid,
@@ -120,11 +117,235 @@ class TransactionService {
         isInstallment: transaction.isInstallment
       });
 
+      // RECORD STOCK HISTORY FOR SALE (only for regular sales, not credit/installment that don't reduce stock immediately)
+      for (const item of items) {
+        try {
+          const product = await db.get('products', item.productId);
+          if (product && !isCreditOrInstallment) {
+            const previousStock = product.stock + item.quantity;
+            await this.recordStockHistory({
+              productId: product._id || product.id,
+              productName: product.name,
+              productSku: product.sku,
+              previousStock: previousStock,
+              newStock: product.stock,
+              quantityChange: -item.quantity,
+              adjustmentType: 'sale',
+              reason: 'Product sold via POS',
+              notes: `Transaction: ${transaction.receiptNumber}`,
+              transactionId: transaction.id,
+              transactionReceipt: transaction.receiptNumber
+            });
+          }
+        } catch (historyError) {
+          console.error('Failed to record stock history for sale:', historyError);
+        }
+      }
+
       await this.addToSyncQueue(transaction.id);
 
       return { success: true, transactionId: transaction.id, transaction };
     } catch (error) {
       console.error('❌ Failed to save transaction locally:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // ==================== RETURN TRANSACTIONS ====================
+
+  async saveReturnTransaction(returnData) {
+    try {
+      await db.ensureInitialized();
+      
+      const returnTransaction = {
+        ...returnData,
+        id: returnData.id || `ret_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        createdAt: returnData.createdAt || new Date().toISOString(),
+        synced: false
+      };
+      
+      // Ensure returns store exists
+      if (!db.db.objectStoreNames.contains('returns')) {
+        console.warn('Returns store not found, creating...');
+      }
+      
+      await db.put('returns', returnTransaction);
+      console.log('✅ Return transaction saved:', returnTransaction.id);
+      
+      // Add to sync queue
+      await db.addToSyncQueue({
+        type: 'return',
+        returnId: returnTransaction.id,
+        timestamp: new Date().toISOString()
+      });
+      
+      return { success: true, returnTransaction };
+    } catch (error) {
+      console.error('❌ Failed to save return transaction:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async updateTransactionLocally(transactionId, updates) {
+    try {
+      await db.ensureInitialized();
+      
+      const transaction = await db.get('transactions', String(transactionId));
+      if (!transaction) {
+        throw new Error(`Transaction ${transactionId} not found`);
+      }
+      
+      const updatedTransaction = {
+        ...transaction,
+        ...updates,
+        updatedAt: new Date().toISOString(),
+        syncRequired: true,
+        synced: false
+      };
+      
+      await db.put('transactions', updatedTransaction);
+      await this.addToSyncQueue(transactionId);
+      
+      console.log('✅ Transaction updated locally:', transactionId);
+      
+      return { success: true, transaction: updatedTransaction };
+    } catch (error) {
+      console.error('❌ Failed to update transaction locally:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getReturnTransactions() {
+    try {
+      await db.ensureInitialized();
+      
+      const returns = await db.getAll('returns') || [];
+      return returns.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (error) {
+      console.error('❌ Failed to get return transactions:', error);
+      return [];
+    }
+  }
+
+  async getReturnByOriginalTransaction(transactionId) {
+    try {
+      await db.ensureInitialized();
+      
+      const returns = await db.getAll('returns') || [];
+      return returns.filter(r => String(r.originalTransactionId) === String(transactionId));
+    } catch (error) {
+      console.error('❌ Failed to get returns by transaction:', error);
+      return [];
+    }
+  }
+
+  async processReturn(transactionId, returnData) {
+    try {
+      await db.ensureInitialized();
+      
+      const transaction = await db.get('transactions', String(transactionId));
+      if (!transaction) {
+        throw new Error(`Transaction ${transactionId} not found`);
+      }
+      
+      // Update transaction with returned items
+      const updatedTransaction = {
+        ...transaction,
+        returnedItems: [
+          ...(transaction.returnedItems || []),
+          ...returnData.items.map(item => ({
+            ...item,
+            returnedAt: new Date().toISOString(),
+            condition: returnData.condition,
+            type: returnData.returnType
+          }))
+        ],
+        updatedAt: new Date().toISOString(),
+        syncRequired: true,
+        synced: false
+      };
+      
+      await db.put('transactions', updatedTransaction);
+      
+      // Save return record
+      const returnRecord = {
+        originalTransactionId: transactionId,
+        originalReceiptNumber: transaction.receiptNumber,
+        items: returnData.items,
+        returnType: returnData.returnType,
+        condition: returnData.condition,
+        reason: returnData.reason,
+        totalRefund: returnData.totalRefund,
+        customer: transaction.customer,
+        createdAt: new Date().toISOString()
+      };
+      
+      await this.saveReturnTransaction(returnRecord);
+      await this.addToSyncQueue(transactionId);
+      
+      console.log('✅ Return processed successfully:', {
+        transactionId,
+        itemsReturned: returnData.items.length,
+        totalRefund: returnData.totalRefund
+      });
+      
+      return { success: true, transaction: updatedTransaction };
+    } catch (error) {
+      console.error('❌ Failed to process return:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // ==================== RECORD STOCK HISTORY ====================
+
+  async recordStockHistory(historyData) {
+    try {
+      await db.ensureInitialized();
+      
+      const stockHistory = {
+        id: `sh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        productId: String(historyData.productId),
+        productName: historyData.productName,
+        productSku: historyData.productSku,
+        previousStock: historyData.previousStock,
+        newStock: historyData.newStock,
+        quantityChange: historyData.quantityChange,
+        adjustmentType: historyData.adjustmentType,
+        reason: historyData.reason,
+        notes: historyData.notes,
+        transactionId: historyData.transactionId,
+        transactionReceipt: historyData.transactionReceipt,
+        performedBy: historyData.performedBy || 'system',
+        createdAt: new Date().toISOString(),
+        synced: false
+      };
+      
+      await db.addToStockHistory(stockHistory);
+      
+      console.log(`📝 Stock history recorded: ${historyData.productName} - ${historyData.quantityChange > 0 ? '+' : ''}${historyData.quantityChange} (${historyData.adjustmentType})`);
+      
+      if (navigator.onLine && historyData.productId) {
+        try {
+          await api.addStockHistory(historyData.productId, {
+            previousStock: historyData.previousStock,
+            newStock: historyData.newStock,
+            quantityChange: historyData.quantityChange,
+            adjustmentType: historyData.adjustmentType,
+            reason: historyData.reason,
+            notes: historyData.notes,
+            transactionId: historyData.transactionId,
+            transactionReceipt: historyData.transactionReceipt
+          });
+          stockHistory.synced = true;
+          await db.updateStockHistory(stockHistory.id, { synced: true });
+        } catch (cloudError) {
+          console.warn('Failed to sync stock history to cloud:', cloudError);
+        }
+      }
+      
+      return { success: true, history: stockHistory };
+    } catch (error) {
+      console.error('❌ Failed to record stock history:', error);
       return { success: false, error: error.message };
     }
   }
@@ -141,6 +362,7 @@ class TransactionService {
         transaction.formattedTotal = this.formatCurrency(transaction.total);
         transaction.formattedRemaining = this.formatCurrency(transaction.remaining);
         transaction.formattedPaid = this.formatCurrency(transaction.paid || 0);
+        transaction.canReturn = this.canReturnTransaction(transaction);
         
         if (transaction.paymentHistory) {
           transaction.paymentHistory.sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -154,6 +376,12 @@ class TransactionService {
     }
   }
 
+  canReturnTransaction(transaction) {
+    if (!transaction.items || transaction.items.length === 0) return false;
+    const returnedCount = transaction.returnedItems?.length || 0;
+    return returnedCount < transaction.items.length;
+  }
+
   async getAllTransactionsLocally() {
     try {
       await db.ensureInitialized();
@@ -163,6 +391,7 @@ class TransactionService {
         ...t,
         paymentProgress: ((t.paid || 0) / t.total) * 100,
         isOverdue: this.isOverdue(t),
+        canReturn: this.canReturnTransaction(t),
         formattedDate: this.formatDate(t.createdAt),
         formattedTotal: this.formatCurrency(t.total),
         formattedRemaining: this.formatCurrency(t.remaining),
@@ -185,6 +414,7 @@ class TransactionService {
         ...t,
         paymentProgress: ((t.paid || 0) / t.total) * 100,
         isOverdue: this.isOverdue(t),
+        canReturn: this.canReturnTransaction(t),
         formattedDate: this.formatDate(t.createdAt),
         formattedTotal: this.formatCurrency(t.total),
         formattedRemaining: this.formatCurrency(t.remaining),
@@ -212,6 +442,7 @@ class TransactionService {
         ...t,
         paymentProgress: ((t.paid || 0) / t.total) * 100,
         isOverdue: this.isOverdue(t),
+        canReturn: this.canReturnTransaction(t),
         formattedDate: this.formatDate(t.createdAt),
         formattedTotal: this.formatCurrency(t.total),
         formattedRemaining: this.formatCurrency(t.remaining),
@@ -335,10 +566,10 @@ class TransactionService {
         customerName: transaction.customer?.name,
         total: transaction.total,
         paid: transaction.paid,
-        remaining: transaction.remaining
+        remaining: transaction.remaining,
+        hasReturns: !!(transaction.returnedItems?.length)
       });
 
-      // Check if transaction already exists in cloud
       let existingCloudTransaction = null;
       
       try {
@@ -391,7 +622,6 @@ class TransactionService {
         return { success: true, transaction: updatedTransaction, alreadyExists: true };
       }
 
-      // Prepare transaction data for cloud
       const customerData = transaction.customer ? {
         name: transaction.customer.name,
         email: transaction.customer.email || '',
@@ -417,13 +647,13 @@ class TransactionService {
         change: transaction.change || 0,
         status: 'completed',
         createdAt: transaction.createdAt || new Date().toISOString(),
-        // Include payment tracking fields
         paid: transaction.paid,
         remaining: transaction.remaining,
         isCredit: transaction.isCredit || false,
         isInstallment: transaction.isInstallment || false,
         dueDate: transaction.dueDate || null,
-        fullyPaid: transaction.fullyPaid || false
+        fullyPaid: transaction.fullyPaid || false,
+        returnedItems: transaction.returnedItems || []
       };
 
       if (customerData && Object.keys(customerData).length > 0) {
@@ -440,10 +670,10 @@ class TransactionService {
         paid: transactionData.paid,
         remaining: transactionData.remaining,
         isCredit: transactionData.isCredit,
-        isInstallment: transactionData.isInstallment
+        isInstallment: transactionData.isInstallment,
+        hasReturns: !!(transactionData.returnedItems?.length)
       });
 
-      // Send to cloud
       let result;
       const cloudId = transaction.cloudId || transaction._id;
       
@@ -1008,20 +1238,96 @@ class TransactionService {
     }
   }
 
+  // ==================== DELETE TRANSACTION (WITH STOCK RESTORATION & HISTORY) ====================
+
   async deleteTransaction(transactionId) {
     try {
       await db.ensureInitialized();
       
       const transaction = await db.get('transactions', String(transactionId));
+      if (!transaction) {
+        throw new Error(`Transaction ${transactionId} not found`);
+      }
+      
+      // RESTORE PRODUCT STOCK and RECORD HISTORY for each item
+      console.log('🔄 Restoring product stock for deleted transaction...');
+      let restoredCount = 0;
+      
+      for (const item of transaction.items) {
+        try {
+          const product = await db.get('products', String(item.productId));
+          
+          if (product) {
+            const oldStock = product.stock;
+            product.stock = (product.stock || 0) + item.quantity;
+            product.updatedAt = new Date().toISOString();
+            product.synced = false;
+            product.syncRequired = true;
+            
+            await db.put('products', product);
+            restoredCount++;
+            
+            console.log(`✅ Stock restored for ${product.name}: ${oldStock} → ${product.stock} (+${item.quantity})`);
+            
+            // RECORD STOCK HISTORY for restoration
+            await this.recordStockHistory({
+              productId: product._id || product.id,
+              productName: product.name,
+              productSku: product.sku,
+              previousStock: oldStock,
+              newStock: product.stock,
+              quantityChange: item.quantity,
+              adjustmentType: 'transaction_delete',
+              reason: 'Transaction deleted - stock restored',
+              notes: `Restored from deleted transaction: ${transaction.receiptNumber}`,
+              transactionId: transaction.id,
+              transactionReceipt: transaction.receiptNumber
+            });
+            
+            // Add to sync queue for cloud update
+            await db.addToSyncQueue({
+              type: 'product',
+              productId: product.id,
+              timestamp: new Date().toISOString()
+            });
+          } else {
+            console.warn(`⚠️ Product not found for stock restoration: ${item.productId}`);
+          }
+        } catch (stockError) {
+          console.error(`❌ Failed to restore stock for product ${item.productId}:`, stockError);
+        }
+      }
+      
+      // Delete from cloud if it has a cloud ID
+      if (transaction.cloudId || transaction._id) {
+        try {
+          const cloudId = transaction.cloudId || transaction._id;
+          console.log(`☁️ Deleting transaction from cloud: ${cloudId}`);
+          const result = await api.deleteTransaction(cloudId);
+          if (!result.success) {
+            console.warn('Cloud delete failed:', result.error);
+          } else {
+            console.log('✅ Transaction deleted from cloud');
+          }
+        } catch (cloudError) {
+          console.error('Failed to delete from cloud:', cloudError);
+        }
+      }
+      
+      // Delete from local storage
       await db.delete('transactions', String(transactionId));
+      
+      // Remove from sync queue
       await this.removeFromSyncQueue(transactionId);
       
-      console.log('🗑️ Transaction deleted:', {
+      console.log('🗑️ Transaction deleted locally with stock restored:', {
         id: transactionId,
-        receiptNumber: transaction?.receiptNumber
+        receiptNumber: transaction?.receiptNumber,
+        itemsRestored: restoredCount,
+        totalItems: transaction.items?.length || 0
       });
       
-      return { success: true };
+      return { success: true, restoredCount };
     } catch (error) {
       console.error('❌ Failed to delete transaction:', error);
       return { success: false, error: error.message };

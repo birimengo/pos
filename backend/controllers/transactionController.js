@@ -1,23 +1,31 @@
 // backend/controllers/transactionController.js
-
 import Transaction from '../models/Transaction.js';
 import Customer from '../models/Customer.js';
 import Product from '../models/Product.js';
 
-// Get all transactions
+// Get all transactions (filtered by store)
 export const getAllTransactions = async (req, res) => {
   try {
-    const transactions = await Transaction.find().sort({ createdAt: -1 });
+    const storeId = req.query.storeId || req.user?.storeId;
+    if (!storeId) {
+      return res.status(400).json({ error: 'Store ID is required' });
+    }
+    
+    const transactions = await Transaction.find({ storeId }).sort({ createdAt: -1 });
     res.json(transactions);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get transaction by ID
+// Get transaction by ID (with store check)
 export const getTransactionById = async (req, res) => {
   try {
-    const transaction = await Transaction.findById(req.params.id);
+    const storeId = req.query.storeId || req.user?.storeId;
+    const transaction = await Transaction.findOne({ 
+      _id: req.params.id, 
+      storeId 
+    });
     if (!transaction) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
@@ -27,10 +35,14 @@ export const getTransactionById = async (req, res) => {
   }
 };
 
-// Get transaction by receipt number
+// Get transaction by receipt number (with store check)
 export const getTransactionByReceipt = async (req, res) => {
   try {
-    const transaction = await Transaction.findOne({ receiptNumber: req.params.receiptNumber });
+    const storeId = req.query.storeId || req.user?.storeId;
+    const transaction = await Transaction.findOne({ 
+      receiptNumber: req.params.receiptNumber,
+      storeId 
+    });
     if (!transaction) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
@@ -40,61 +52,46 @@ export const getTransactionByReceipt = async (req, res) => {
   }
 };
 
-// Create transaction
+// Create transaction (with storeId)
 export const createTransaction = async (req, res) => {
   try {
-    const existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
+    const storeId = req.body.storeId || req.user?.storeId;
+    if (!storeId) {
+      return res.status(400).json({ error: 'Store ID is required' });
+    }
+    
+    const existingTransaction = await Transaction.findOne({ 
+      receiptNumber: req.body.receiptNumber,
+      storeId 
+    });
+    
     if (existingTransaction) {
       console.log('⚠️ Transaction with receipt number already exists:', req.body.receiptNumber);
       return res.status(200).json(existingTransaction);
     }
     
     const transactionData = {
-      receiptNumber: req.body.receiptNumber,
-      customer: req.body.customer,
-      items: req.body.items,
-      subtotal: req.body.subtotal,
-      discount: req.body.discount || 0,
-      tax: req.body.tax || 0,
-      total: req.body.total,
-      paymentMethod: req.body.paymentMethod,
-      change: req.body.change || 0,
-      notes: req.body.notes || '',
-      createdAt: req.body.createdAt || new Date(),
-      
-      // Credit/Installment fields
-      isCredit: req.body.isCredit || false,
-      isInstallment: req.body.isInstallment || false,
-      paid: req.body.paid || 0,
-      remaining: req.body.remaining || 0,
-      initialPayment: req.body.initialPayment || 0,
-      dueDate: req.body.dueDate || null,
-      fullyPaid: req.body.remaining <= 0,
-      paymentHistory: req.body.paymentHistory || []
+      ...req.body,
+      storeId
     };
     
     const transaction = new Transaction(transactionData);
     await transaction.save();
     
-    // Update customer loyalty points if customer exists
     if (transaction.customer && transaction.customer.id) {
       await Customer.findByIdAndUpdate(
         transaction.customer.id,
         {
-          $inc: { 
-            loyaltyPoints: Math.floor(transaction.total / 100),
-            totalSpent: transaction.total 
-          },
+          $inc: { loyaltyPoints: Math.floor(transaction.total / 100), totalSpent: transaction.total },
           lastVisit: new Date()
         }
       );
     }
     
-    // Update product stock
     for (const item of transaction.items) {
       if (item.productId) {
-        await Product.findByIdAndUpdate(
-          item.productId,
+        await Product.findOneAndUpdate(
+          { _id: item.productId, storeId },
           { $inc: { stock: -item.quantity } }
         );
       }
@@ -107,11 +104,17 @@ export const createTransaction = async (req, res) => {
   }
 };
 
-// Sync transaction (for offline sync) - FIXED with credit/installment fields
+// Sync transaction (with storeId)
 export const syncTransaction = async (req, res) => {
   try {
+    const storeId = req.body.storeId || req.user?.storeId;
+    if (!storeId) {
+      return res.status(400).json({ error: 'Store ID is required' });
+    }
+    
     console.log('📥 Incoming transaction sync:', {
       receiptNumber: req.body.receiptNumber,
+      storeId,
       hasCustomer: !!req.body.customer,
       isCredit: req.body.isCredit,
       isInstallment: req.body.isInstallment,
@@ -119,18 +122,17 @@ export const syncTransaction = async (req, res) => {
       remaining: req.body.remaining
     });
     
-    // Check if transaction already exists by receipt number
-    let existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
+    let existingTransaction = await Transaction.findOne({ 
+      receiptNumber: req.body.receiptNumber,
+      storeId 
+    });
     
     if (existingTransaction) {
-      // Update existing transaction with new payment info if needed
       if (req.body.paid !== undefined || req.body.remaining !== undefined) {
         if (req.body.paid !== undefined) existingTransaction.paid = req.body.paid;
         if (req.body.remaining !== undefined) existingTransaction.remaining = req.body.remaining;
         existingTransaction.fullyPaid = existingTransaction.remaining <= 0;
-        if (req.body.paymentHistory) {
-          existingTransaction.paymentHistory = req.body.paymentHistory;
-        }
+        if (req.body.paymentHistory) existingTransaction.paymentHistory = req.body.paymentHistory;
         await existingTransaction.save();
         console.log('✅ Transaction updated:', existingTransaction.receiptNumber);
       }
@@ -142,7 +144,6 @@ export const syncTransaction = async (req, res) => {
       });
     }
     
-    // Create new transaction with all fields including credit/installment data
     const transactionData = {
       receiptNumber: req.body.receiptNumber,
       customer: req.body.customer,
@@ -155,8 +156,7 @@ export const syncTransaction = async (req, res) => {
       change: req.body.change || 0,
       notes: req.body.notes || '',
       createdAt: req.body.createdAt || new Date(),
-      
-      // Credit/Installment fields
+      storeId,
       isCredit: req.body.isCredit || false,
       isInstallment: req.body.isInstallment || false,
       paid: req.body.paid || 0,
@@ -169,24 +169,17 @@ export const syncTransaction = async (req, res) => {
     
     const transaction = new Transaction(transactionData);
     await transaction.save();
-    console.log('📦 New transaction saved:', transaction.receiptNumber, {
-      isCredit: transaction.isCredit,
-      isInstallment: transaction.isInstallment,
-      paid: transaction.paid,
-      remaining: transaction.remaining
-    });
+    console.log('📦 New transaction saved:', transaction.receiptNumber);
     
     res.json({ success: true, id: transaction._id, transaction });
   } catch (error) {
     if (error.code === 11000) {
-      const existingTransaction = await Transaction.findOne({ receiptNumber: req.body.receiptNumber });
+      const existingTransaction = await Transaction.findOne({ 
+        receiptNumber: req.body.receiptNumber,
+        storeId 
+      });
       if (existingTransaction) {
-        return res.json({ 
-          success: true, 
-          id: existingTransaction._id, 
-          transaction: existingTransaction,
-          alreadyExists: true 
-        });
+        return res.json({ success: true, id: existingTransaction._id, transaction: existingTransaction, alreadyExists: true });
       }
     }
     console.error('❌ Transaction sync error:', error);
@@ -194,11 +187,12 @@ export const syncTransaction = async (req, res) => {
   }
 };
 
-// Update transaction
+// Update transaction (with store check)
 export const updateTransaction = async (req, res) => {
   try {
-    const transaction = await Transaction.findByIdAndUpdate(
-      req.params.id,
+    const storeId = req.body.storeId || req.user?.storeId;
+    const transaction = await Transaction.findOneAndUpdate(
+      { _id: req.params.id, storeId },
       { ...req.body, updatedAt: Date.now() },
       { new: true, runValidators: true }
     );
@@ -215,11 +209,77 @@ export const updateTransaction = async (req, res) => {
   }
 };
 
+// Delete transaction (with store check and stock restoration)
+export const deleteTransaction = async (req, res) => {
+  try {
+    const storeId = req.query.storeId || req.user?.storeId;
+    const transaction = await Transaction.findOne({ 
+      _id: req.params.id, 
+      storeId 
+    });
+    
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    
+    console.log('🔄 Restoring product stock for deleted transaction:', transaction.receiptNumber);
+    let restoredCount = 0;
+    const restoredProducts = [];
+    
+    for (const item of transaction.items) {
+      if (item.productId) {
+        try {
+          const product = await Product.findOne({ _id: item.productId, storeId });
+          if (product) {
+            const oldStock = product.stock;
+            product.stock = (product.stock || 0) + item.quantity;
+            product.updatedAt = Date.now();
+            await product.save();
+            restoredCount++;
+            restoredProducts.push({
+              name: product.name,
+              oldStock,
+              newStock: product.stock,
+              quantityRestored: item.quantity
+            });
+            console.log(`✅ Stock restored for ${product.name}: ${oldStock} → ${product.stock} (+${item.quantity})`);
+          } else {
+            console.warn(`⚠️ Product not found for stock restoration: ${item.productId}`);
+          }
+        } catch (stockError) {
+          console.error(`❌ Failed to restore stock for product ${item.productId}:`, stockError);
+        }
+      }
+    }
+    
+    await Transaction.findOneAndDelete({ _id: req.params.id, storeId });
+    
+    console.log('🗑️ Transaction deleted from cloud:', {
+      receiptNumber: transaction.receiptNumber,
+      storeId,
+      itemsRestored: restoredCount,
+      totalItems: transaction.items.length
+    });
+    
+    res.json({ 
+      success: true, 
+      message: 'Transaction deleted successfully',
+      restoredCount,
+      restoredProducts,
+      receiptNumber: transaction.receiptNumber
+    });
+  } catch (error) {
+    console.error('❌ Delete transaction error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 // Update transaction status (refund/void)
 export const updateTransactionStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const transaction = await Transaction.findById(req.params.id);
+    const storeId = req.body.storeId || req.user?.storeId;
+    const transaction = await Transaction.findOne({ _id: req.params.id, storeId });
     
     if (!transaction) {
       return res.status(404).json({ error: 'Transaction not found' });
@@ -228,8 +288,8 @@ export const updateTransactionStatus = async (req, res) => {
     if (status === 'refunded' && transaction.status === 'completed') {
       for (const item of transaction.items) {
         if (item.productId) {
-          await Product.findByIdAndUpdate(
-            item.productId,
+          await Product.findOneAndUpdate(
+            { _id: item.productId, storeId },
             { $inc: { stock: item.quantity } }
           );
         }
@@ -245,35 +305,31 @@ export const updateTransactionStatus = async (req, res) => {
   }
 };
 
-// Get daily sales summary
+// Get daily sales summary (with store filter)
 export const getDailySales = async (req, res) => {
   try {
+    const storeId = req.query.storeId || req.user?.storeId;
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-    
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
     
     const transactions = await Transaction.find({
       createdAt: { $gte: startOfDay, $lte: endOfDay },
-      status: 'completed'
+      status: 'completed',
+      storeId
     });
     
     const summary = {
       totalSales: transactions.reduce((sum, t) => sum + t.total, 0),
       transactionCount: transactions.length,
-      averageTicket: transactions.length > 0 
-        ? transactions.reduce((sum, t) => sum + t.total, 0) / transactions.length 
-        : 0,
+      averageTicket: transactions.length > 0 ? transactions.reduce((sum, t) => sum + t.total, 0) / transactions.length : 0,
       paymentMethods: {}
     };
     
     transactions.forEach(t => {
       if (!summary.paymentMethods[t.paymentMethod]) {
-        summary.paymentMethods[t.paymentMethod] = {
-          count: 0,
-          total: 0
-        };
+        summary.paymentMethods[t.paymentMethod] = { count: 0, total: 0 };
       }
       summary.paymentMethods[t.paymentMethod].count++;
       summary.paymentMethods[t.paymentMethod].total += t.total;
@@ -285,12 +341,14 @@ export const getDailySales = async (req, res) => {
   }
 };
 
-// Get transactions by date range
+// Get transactions by date range (with store filter)
 export const getTransactionsByDateRange = async (req, res) => {
   try {
+    const storeId = req.query.storeId || req.user?.storeId;
     const { startDate, endDate } = req.query;
     const transactions = await Transaction.find({
-      createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) }
+      createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
+      storeId
     }).sort({ createdAt: -1 });
     res.json(transactions);
   } catch (error) {
@@ -298,30 +356,27 @@ export const getTransactionsByDateRange = async (req, res) => {
   }
 };
 
-// Get sales summary for date range
+// Get sales summary for date range (with store filter)
 export const getSalesSummary = async (req, res) => {
   try {
+    const storeId = req.query.storeId || req.user?.storeId;
     const { startDate, endDate } = req.query;
     const transactions = await Transaction.find({
       createdAt: { $gte: new Date(startDate), $lte: new Date(endDate) },
-      status: 'completed'
+      status: 'completed',
+      storeId
     });
     
     const summary = {
       totalSales: transactions.reduce((sum, t) => sum + t.total, 0),
       transactionCount: transactions.length,
-      averageTicket: transactions.length > 0 
-        ? transactions.reduce((sum, t) => sum + t.total, 0) / transactions.length 
-        : 0,
+      averageTicket: transactions.length > 0 ? transactions.reduce((sum, t) => sum + t.total, 0) / transactions.length : 0,
       paymentMethods: {}
     };
     
     transactions.forEach(t => {
       if (!summary.paymentMethods[t.paymentMethod]) {
-        summary.paymentMethods[t.paymentMethod] = {
-          count: 0,
-          total: 0
-        };
+        summary.paymentMethods[t.paymentMethod] = { count: 0, total: 0 };
       }
       summary.paymentMethods[t.paymentMethod].count++;
       summary.paymentMethods[t.paymentMethod].total += t.total;

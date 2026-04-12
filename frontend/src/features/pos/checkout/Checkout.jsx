@@ -1,7 +1,8 @@
 // src/features/pos/checkout/Checkout.jsx
-
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useCurrency } from '../context/CurrencyContext';
+import { useStore } from '../context/StoreContext';
 import { useInventory } from '../context/InventoryContext';
 import { useCart } from '../context/CartContext';
 import { useCustomers } from '../context/CustomerContext';
@@ -14,26 +15,6 @@ import { db } from '../services/database';
 import { transactionService } from '../services/transactionService';
 import { cloudSync } from '../services/cloudSyncService';
 import { customerService } from '../services/customerService';
-
-// Helper function to format price
-const formatPrice = (price) => {
-  const rounded = Math.round(price * 100) / 100;
-  if (rounded % 1 === 0) {
-    return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  } else {
-    return rounded.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  }
-};
-
-// Helper function to format currency for notes
-const formatCurrency = (amount) => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(amount || 0);
-};
 
 // Helper function to find existing customer
 const findExistingCustomer = (customer, customersList) => {
@@ -76,10 +57,17 @@ export default function Checkout() {
   
   // Hooks
   const { theme, getTheme } = useTheme();
+  const { formatPrice, currency, getCurrencySymbol } = useCurrency();
+  const { activeStore } = useStore();
   const { state: inventoryState, dispatch: inventoryDispatch } = useInventory();
   const { state: cartState, dispatch: cartDispatch } = useCart();
   const { state: customerState, dispatch: customerDispatch } = useCustomers();
   const currentTheme = getTheme(theme);
+
+  // Helper function to format currency for notes (uses current currency)
+  const formatCurrency = useCallback((amount) => {
+    return formatPrice(amount, { showSymbol: true, showCode: false });
+  }, [formatPrice]);
 
   // Theme-specific classes
   const getThemeSpecificClasses = useCallback(() => {
@@ -427,7 +415,7 @@ export default function Checkout() {
     return (cartState.subtotal - cartState.discount) + calculateTax();
   }, [cartState.subtotal, cartState.discount, calculateTax]);
 
-  // Stock update
+  // Stock update with store check
   const updateProductStock = async (productId, quantitySold) => {
     const product = inventoryState.products.find(p => p.id === productId);
     if (!product) return;
@@ -445,23 +433,25 @@ export default function Checkout() {
         stock: newStock,
         updatedAt: new Date().toISOString(),
         synced: false,
-        syncRequired: true
+        syncRequired: true,
+        storeId: activeStore?.id
       };
       
       await db.saveProduct(updatedProduct);
-      console.log(`✅ Stock updated for ${product.name}: ${newStock} remaining`);
+      console.log(`✅ Stock updated for ${product.name} (${activeStore?.name}): ${newStock} remaining`);
       
       await db.addToSyncQueue({
         type: 'product',
         productId: product.id,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        storeId: activeStore?.id
       });
     } catch (error) {
       console.error('❌ Failed to update stock:', error);
     }
   };
 
-  // Save transaction - FIXED for credit/installment payments with down payment
+  // Save transaction with store ID
   const saveTransaction = async (saleData) => {
     try {
       const customerForTransaction = saleData.customer ? {
@@ -473,10 +463,8 @@ export default function Checkout() {
         loyaltyPoints: saleData.customer.loyaltyPoints || 0
       } : null;
 
-      // Calculate the actual paid amount and remaining
       const isCreditOrInstallment = saleData.isCredit || saleData.isInstallment;
       
-      // Determine paid amount from various possible sources
       let paidAmount = saleData.paid;
       if (paidAmount === undefined && saleData.initialPayment !== undefined) {
         paidAmount = saleData.initialPayment;
@@ -492,7 +480,6 @@ export default function Checkout() {
         ? saleData.total - paidAmount
         : 0;
 
-      // Build notes including installment plan details if present
       let notes = saleData.notes || '';
       if (saleData.isInstallment && saleData.installmentPeriod) {
         const monthlyPayment = remainingAmount / saleData.installmentPeriod;
@@ -533,43 +520,28 @@ export default function Checkout() {
         customer: customerForTransaction,
         notes: notes,
         timestamp: saleData.timestamp,
-        
-        // Payment tracking
+        storeId: activeStore?.id,
+        storeName: activeStore?.name,
         isCredit: saleData.isCredit || false,
         isInstallment: saleData.isInstallment || false,
         dueDate: saleData.dueDate || null,
-        
-        // These fields control the payment tracking
         paid: paidAmount,
         remaining: remainingAmount,
         initialPayment: paidAmount,
-        
-        // Sync flags
         synced: false,
         syncRequired: true
       };
 
-      console.log('💾 Saving transaction:', {
+      console.log('💾 Saving transaction with store:', {
+        storeId: transactionData.storeId,
+        storeName: transactionData.storeName,
         receiptNumber: transactionData.receiptNumber,
-        total: transactionData.total,
-        paid: transactionData.paid,
-        remaining: transactionData.remaining,
-        isCredit: transactionData.isCredit,
-        isInstallment: transactionData.isInstallment,
-        notes: transactionData.notes
+        total: transactionData.total
       });
 
       const result = await transactionService.saveTransactionLocally(transactionData);
       
       if (result.success) {
-        console.log('✅ Transaction saved:', {
-          id: result.transactionId,
-          receiptNumber: result.transaction.receiptNumber,
-          total: result.transaction.total,
-          paid: result.transaction.paid,
-          remaining: result.transaction.remaining
-        });
-        
         return result.transaction;
       } else {
         throw new Error(result.error);
@@ -590,7 +562,7 @@ export default function Checkout() {
         customerIdStr,
         pointsEarned,
         amount,
-        { isCredit, isInstallment }
+        { isCredit, isInstallment, storeId: activeStore?.id }
       );
       
       if (result.success) {
@@ -601,22 +573,27 @@ export default function Checkout() {
             points: pointsEarned,
             amount,
             isCredit,
-            isInstallment
+            isInstallment,
+            storeId: activeStore?.id
           }
         });
-        console.log(`✅ Loyalty points added: +${pointsEarned} for customer ${customerIdStr}`);
+        console.log(`✅ Loyalty points added: +${pointsEarned} for customer ${customerIdStr} at ${activeStore?.name}`);
       }
     } catch (error) {
       console.error('❌ Failed to update loyalty:', error);
     }
   };
 
-  // Handle payment completion - FIXED for down payment
+  // Handle payment completion
   const handlePaymentComplete = async (paymentDetails) => {
+    if (!activeStore) {
+      alert('No active store selected. Please select a store first.');
+      return;
+    }
+
     setProcessingSale(true);
     
     try {
-      // Update stock for each item
       for (const item of cartState.items) {
         await updateProductStock(item.id, item.quantity);
       }
@@ -625,30 +602,15 @@ export default function Checkout() {
       const total = calculateTotal();
       const subtotal = cartState.subtotal - cartState.discount;
 
-      // Determine payment amounts
       const isCreditOrInstallment = paymentDetails.isCredit || paymentDetails.isInstallment;
       
-      // Get the paid amount from paymentDetails - prioritize initialPayment, then downPayment, then amount
       let paidAmount = total;
       if (isCreditOrInstallment) {
         paidAmount = paymentDetails.initialPayment || paymentDetails.downPayment || paymentDetails.amount || 0;
       }
       
-      const remainingAmount = isCreditOrInstallment 
-        ? total - paidAmount
-        : 0;
+      const remainingAmount = isCreditOrInstallment ? total - paidAmount : 0;
 
-      console.log('💰 Payment calculation:', {
-        total,
-        isCreditOrInstallment,
-        paidAmount,
-        remainingAmount,
-        initialPayment: paymentDetails.initialPayment,
-        downPayment: paymentDetails.downPayment,
-        amount: paymentDetails.amount
-      });
-
-      // Prepare sale data
       const sale = {
         ...cartState,
         ...paymentDetails,
@@ -669,22 +631,13 @@ export default function Checkout() {
         installmentPeriod: paymentDetails.installmentPeriod || null,
         downPayment: paymentDetails.downPayment || paidAmount,
         creditSchedule: paymentDetails.creditSchedule || null,
-        notes: paymentDetails.notes || cartState.notes || ''
+        notes: paymentDetails.notes || cartState.notes || '',
+        storeId: activeStore.id,
+        storeName: activeStore.name
       };
 
-      console.log('💾 Preparing to save transaction:', {
-        receiptNumber: sale.receiptNumber,
-        total: sale.total,
-        paid: sale.paid,
-        remaining: sale.remaining,
-        isCredit: sale.isCredit,
-        isInstallment: sale.isInstallment
-      });
-
-      // Save transaction
       const savedTransaction = await saveTransaction(sale);
 
-      // Update customer loyalty if customer exists (based on total, not just paid)
       if (cartState.customer) {
         await updateCustomerLoyalty(
           cartState.customer.id,
@@ -694,7 +647,6 @@ export default function Checkout() {
         );
       }
 
-      // Trigger cloud sync if online
       if (navigator.onLine) {
         setTimeout(() => {
           transactionService.syncAllPending().catch(err => 
@@ -703,18 +655,18 @@ export default function Checkout() {
         }, 1000);
       }
 
-      // Update UI
       setLastSale({ ...sale, id: savedTransaction?.id });
       setShowPaymentModal(false);
       setShowReceipt(true);
 
-      // Show success message
       if (isCreditOrInstallment) {
         if (remainingAmount > 0) {
-          alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale recorded!\n\nInitial Payment: ${formatPrice(paidAmount)}\nRemaining Balance: ${formatPrice(remainingAmount)}\nDue Date: ${paymentDetails.dueDate ? new Date(paymentDetails.dueDate).toLocaleDateString() : 'Not set'}`);
+          alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale recorded at ${activeStore.name}!\n\nInitial Payment: ${formatCurrency(paidAmount)}\nRemaining Balance: ${formatCurrency(remainingAmount)}\nDue Date: ${paymentDetails.dueDate ? new Date(paymentDetails.dueDate).toLocaleDateString() : 'Not set'}`);
         } else {
-          alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale fully paid!`);
+          alert(`✅ ${paymentDetails.isCredit ? 'Credit' : 'Installment'} sale fully paid at ${activeStore.name}!`);
         }
+      } else {
+        alert(`✅ Sale completed at ${activeStore.name}! Total: ${formatCurrency(total)}`);
       }
 
     } catch (error) {
@@ -729,9 +681,9 @@ export default function Checkout() {
   const handlePrintReceipt = () => {
     const printWindow = window.open('', '_blank');
     if (printWindow) {
-      const storeName = inventoryState.store?.name || 'STORE NAME';
-      const storeAddress = inventoryState.store?.address || '123 Main Street';
-      const storePhone = inventoryState.store?.phone || '(555) 123-4567';
+      const storeName = inventoryState.store?.name || activeStore?.name || 'STORE NAME';
+      const storeAddress = inventoryState.store?.address || activeStore?.address || '123 Main Street';
+      const storePhone = inventoryState.store?.phone || activeStore?.phone || '(555) 123-4567';
       const tax = lastSale?.tax || calculateTax();
       const total = lastSale?.total || calculateTotal();
       const paid = lastSale?.paid || total;
@@ -765,51 +717,51 @@ export default function Checkout() {
               ${lastSale?.items.map(item => `
                 <div class="item">
                   <span>${item.name} x${item.quantity}</span>
-                  <span>$${formatPrice(item.price * item.quantity)}</span>
+                  <span>${formatCurrency(item.price * item.quantity)}</span>
                 </div>
               `).join('')}
             </div>
             <div class="total">
               <div class="item">
                 <span>Subtotal:</span>
-                <span>$${formatPrice(lastSale?.subtotal)}</span>
+                <span>${formatCurrency(lastSale?.subtotal)}</span>
               </div>
               ${lastSale?.discount > 0 ? `
                 <div class="item">
                   <span>Discount:</span>
-                  <span>-$${formatPrice(lastSale?.discount)}</span>
+                  <span>-${formatCurrency(lastSale?.discount)}</span>
                 </div>
               ` : ''}
               <div class="item">
                 <span>Tax (${(taxRate * 100).toFixed(0)}%):</span>
-                <span>$${formatPrice(tax)}</span>
+                <span>${formatCurrency(tax)}</span>
               </div>
               <div class="item" style="font-size: 16px;">
                 <span>TOTAL:</span>
-                <span>$${formatPrice(total)}</span>
+                <span>${formatCurrency(total)}</span>
               </div>
               <div class="item">
                 <span>Paid:</span>
-                <span>$${formatPrice(paid)}</span>
+                <span>${formatCurrency(paid)}</span>
               </div>
               ${remaining > 0 ? `
                 <div class="item" style="color: #e67e22;">
                   <span>Remaining:</span>
-                  <span>$${formatPrice(remaining)}</span>
+                  <span>${formatCurrency(remaining)}</span>
                 </div>
               ` : ''}
               ${lastSale?.change > 0 ? `
                 <div class="item">
                   <span>Change:</span>
-                  <span>$${formatPrice(lastSale?.change)}</span>
+                  <span>${formatCurrency(lastSale?.change)}</span>
                 </div>
               ` : ''}
             </div>
             ${lastSale?.isCredit || lastSale?.isInstallment ? `
               <div class="credit-info">
                 <strong>${lastSale.isCredit ? 'CREDIT SALE' : 'INSTALLMENT SALE'}</strong><br>
-                Initial Payment: $${formatPrice(lastSale.initialPayment || 0)}<br>
-                ${remaining > 0 ? `Remaining Balance: $${formatPrice(remaining)}<br>` : ''}
+                Initial Payment: ${formatCurrency(lastSale.initialPayment || 0)}<br>
+                ${remaining > 0 ? `Remaining Balance: ${formatCurrency(remaining)}<br>` : ''}
                 Due Date: ${lastSale.dueDate ? new Date(lastSale.dueDate).toLocaleDateString() : 'Not set'}
               </div>
             ` : ''}
@@ -821,6 +773,8 @@ export default function Checkout() {
             <div class="footer">
               <p>Thank you for your business!</p>
               <p style="font-size: 10px; margin-top: 10px;">Transaction ID: ${lastSale?.id || ''}</p>
+              <p style="font-size: 10px;">Store: ${activeStore?.name || 'N/A'}</p>
+              <p style="font-size: 10px;">Currency: ${currency.code} (${getCurrencySymbol()})</p>
             </div>
           </body>
         </html>
@@ -855,11 +809,20 @@ export default function Checkout() {
     }
   };
 
+  // Store info display
+  const currentStoreInfo = activeStore ? (
+    <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[9px]`}>
+      <Icons.store className="text-[10px]" />
+      <span className="truncate max-w-[100px]">{activeStore.name}</span>
+    </div>
+  ) : null;
+
   return (
     <div className="h-full flex flex-col m-0 p-0">
       {/* Header */}
       <div className="flex justify-between items-center m-0 p-1">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {currentStoreInfo}
           {syncStatus && syncStatus.unsynced > 0 && (
             <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
               syncStatus.isOnline ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700'
@@ -868,6 +831,9 @@ export default function Checkout() {
               {syncStatus.unsynced} pending
             </span>
           )}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700`}>
+            {currency.code}
+          </span>
         </div>
         <span className={`text-[12px]`}
           style={{ color: theme === 'light' ? '#4b5563' : currentTheme.colors.textSecondary }}>
@@ -946,7 +912,6 @@ export default function Checkout() {
                               }}
                             />
                             
-                            {/* Image Navigation */}
                             {images.length > 1 && (
                               <>
                                 <button
@@ -970,7 +935,6 @@ export default function Checkout() {
                           </div>
                         )}
                         
-                        {/* Stock Badge */}
                         <span className={`absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium
                           ${product.stock < 10 
                             ? theme === 'dark' 
@@ -988,14 +952,13 @@ export default function Checkout() {
                         </span>
                       </div>
 
-                      {/* Product Info */}
-                      <h3 className={`text-xs font-medium mb-1 text-blue-600 dark:text-blue-400 line-clamp-2 h-8`}>
+                      <h3 className={`text-xs font-medium mb-1 ${currentTheme.accentText} line-clamp-2 h-8`}>
                         {product.name}
                       </h3>
                       
                       <div className="flex items-center justify-between mb-1">
-                        <p className={`text-sm font-bold text-blue-600 dark:text-blue-400`}>
-                          ${formatPrice(product.price)}
+                        <p className={`text-sm font-bold ${currentTheme.accentText}`}>
+                          {formatPrice(product.price)}
                         </p>
                         {inCart > 0 && (
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full
@@ -1010,7 +973,6 @@ export default function Checkout() {
                         )}
                       </div>
 
-                      {/* SKU */}
                       <div className="flex items-center text-[9px] text-gray-500 dark:text-gray-400">
                         <span className="truncate">SKU: {product.sku}</span>
                       </div>
@@ -1098,8 +1060,8 @@ export default function Checkout() {
                           }`}>
                             {item.name}
                           </p>
-                          <p className="text-[10px] text-blue-600 dark:text-blue-400 whitespace-nowrap">
-                            ${formatPrice(item.price)}
+                          <p className={`text-[10px] ${currentTheme.accentText} whitespace-nowrap`}>
+                            {formatPrice(item.price)}
                           </p>
                           <button
                             onClick={() => cartDispatch({ type: 'REMOVE_ITEM', payload: item.id })}
@@ -1133,8 +1095,8 @@ export default function Checkout() {
                           +
                         </button>
                       </div>
-                      <p className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
-                        ${formatPrice(item.price * item.quantity)}
+                      <p className={`text-[10px] font-bold ${currentTheme.accentText}`}>
+                        {formatPrice(item.price * item.quantity)}
                       </p>
                     </div>
 
@@ -1174,22 +1136,22 @@ export default function Checkout() {
           <div className={`pt-1.5 border-t ${currentTheme.colors.border} flex-shrink-0`}>
             <div className="flex justify-between items-center text-[14px]">
               <span className={currentTheme.colors.textSecondary}>Subtotal</span>
-              <span className="text-blue-600 dark:text-blue-400">${formatPrice(cartState.subtotal)}</span>
+              <span className={currentTheme.accentText}>{formatPrice(cartState.subtotal)}</span>
             </div>
             {cartState.discount > 0 && (
               <div className="flex justify-between items-center text-[12px]">
                 <span className={currentTheme.colors.textSecondary}>Discount</span>
-                <span className="text-green-600">-${formatPrice(cartState.discount)}</span>
+                <span className="text-green-600">-{formatPrice(cartState.discount)}</span>
               </div>
             )}
             <div className="flex justify-between items-center text-[14px]">
-              <span className={currentTheme.colors.textSecondary}>Tax</span>
-              <span className="text-blue-600 dark:text-blue-400">${formatPrice(calculateTax())}</span>
+              <span className={currentTheme.colors.textSecondary}>Tax ({Math.round(taxRate * 100)}%)</span>
+              <span className={currentTheme.accentText}>{formatPrice(calculateTax())}</span>
             </div>
             <div className="flex justify-between items-center font-medium text-xs pt-1 mt-0.5 border-t border-dashed">
-              <span className="text-blue-600 dark:text-gray-700">Total</span>
-              <span className="text-blue-600 dark:text-blue-400 font-semibold">
-                ${formatPrice(calculateTotal())}
+              <span className={currentTheme.accentText}>Total</span>
+              <span className={`font-semibold ${currentTheme.accentText}`}>
+                {formatPrice(calculateTotal())}
               </span>
             </div>
           </div>
@@ -1205,7 +1167,7 @@ export default function Checkout() {
 
           {/* Payment Button */}
           <button
-            disabled={cartState.items.length === 0 || processingSale}
+            disabled={cartState.items.length === 0 || processingSale || !activeStore}
             onClick={() => setShowPaymentModal(true)}
             className={`w-full py-2.5 text-sm font-semibold rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white hover:shadow disabled:opacity-50 flex items-center justify-center gap-1 flex-shrink-0`}
           >
@@ -1217,7 +1179,7 @@ export default function Checkout() {
             ) : (
               <>
                 <Icons.creditCard className="text-sm" />
-                Pay ${formatPrice(calculateTotal())}
+                Pay {formatPrice(calculateTotal())}
               </>
             )}
           </button>

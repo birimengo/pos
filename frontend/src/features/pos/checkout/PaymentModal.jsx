@@ -1,7 +1,7 @@
 // src/features/pos/checkout/PaymentModal.jsx
-
 import { useState } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
+import { useCurrency } from '../context/CurrencyContext';
 import { Icons } from '../../../components/ui/Icons';
 
 export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete }) {
@@ -16,6 +16,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
   const [creditPaymentSchedule, setCreditPaymentSchedule] = useState('monthly'); // 'weekly', '3months', '6months', '12months'
   const [customDueDate, setCustomDueDate] = useState('');
   const { theme, getTheme } = useTheme();
+  const { formatPrice, currency, getCurrencySymbol, getCurrencyInfo } = useCurrency();
   const currentTheme = getTheme(theme);
 
   if (!isOpen) return null;
@@ -57,6 +58,11 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
     return dueDate.toISOString().split('T')[0];
   };
 
+  // Format currency using the global currency context
+  const formatCurrency = (amount) => {
+    return formatPrice(amount, { showSymbol: true, showCode: false });
+  };
+
   const handleAmountChange = (e) => {
     const value = parseFloat(e.target.value) || 0;
     setAmountPaid(value);
@@ -83,15 +89,6 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
   const handleCreditOption = () => {
     setInsufficientAction('credit');
     setCreditPaymentSchedule('monthly');
-  };
-
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(amount || 0);
   };
 
   const handlePayment = async () => {
@@ -156,6 +153,20 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
     setCreditPaymentSchedule(schedule);
   };
 
+  // Get button gradient based on action
+  const getButtonGradient = () => {
+    if (insufficientAction === 'installment') return 'from-blue-500 to-blue-600';
+    if (insufficientAction === 'credit') return 'from-purple-500 to-purple-600';
+    return currentTheme.colors.accent;
+  };
+
+  // Get button text based on action
+  const getButtonText = () => {
+    if (insufficientAction === 'installment') return 'Start Installment';
+    if (insufficientAction === 'credit') return 'Create Credit Sale';
+    return 'Complete Payment';
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className={`w-full max-w-md ${currentTheme.colors.card} rounded-xl shadow-2xl max-h-[90vh] overflow-y-auto`}>
@@ -169,10 +180,13 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
 
         {/* Body */}
         <div className="p-4 space-y-4">
-          {/* Total Amount */}
+          {/* Total Amount with Currency Info */}
           <div className={`p-3 ${currentTheme.colors.accentLight} rounded-lg text-center`}>
             <p className={`text-sm ${currentTheme.colors.textSecondary}`}>Total Amount</p>
             <p className={`text-3xl font-bold ${currentTheme.accentText}`}>{formatCurrency(total)}</p>
+            <p className={`text-xs ${currentTheme.colors.textMuted} mt-1`}>
+              {currency.code} • {currency.name}
+            </p>
           </div>
 
           {/* Payment Methods */}
@@ -296,9 +310,9 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                           onChange={(e) => setInstallmentPeriod(parseInt(e.target.value))}
                           className={`w-full px-2 py-1.5 text-sm rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
                         >
-                          <option value={3}>3 months ({(total - downPayment) / 3} per month)</option>
-                          <option value={6}>6 months ({(total - downPayment) / 6} per month)</option>
-                          <option value={12}>12 months ({(total - downPayment) / 12} per month)</option>
+                          <option value={3}>3 months ({formatCurrency((total - downPayment) / 3)} per month)</option>
+                          <option value={6}>6 months ({formatCurrency((total - downPayment) / 6)} per month)</option>
+                          <option value={12}>12 months ({formatCurrency((total - downPayment) / 12)} per month)</option>
                         </select>
                         <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>
                           Note: Product will be reserved until fully paid
@@ -425,6 +439,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
               <Icons.creditCard className={`text-4xl mx-auto mb-2 ${currentTheme.accentText}`} />
               <p className={`text-sm ${currentTheme.colors.text}`}>Tap, insert, or swipe card</p>
               <p className={`text-xs ${currentTheme.colors.textSecondary} mt-1`}>Terminal will connect automatically</p>
+              <p className={`text-xs ${currentTheme.colors.textMuted} mt-2`}>Amount: {formatCurrency(amountPaid)}</p>
             </div>
           )}
 
@@ -434,6 +449,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
               <Icons.phone className={`text-4xl mx-auto mb-2 ${currentTheme.accentText}`} />
               <p className={`text-sm ${currentTheme.colors.text}`}>Apple Pay / Google Pay</p>
               <p className={`text-xs ${currentTheme.colors.textSecondary} mt-1`}>Ready for contactless payment</p>
+              <p className={`text-xs ${currentTheme.colors.textMuted} mt-2`}>Amount: {formatCurrency(amountPaid)}</p>
             </div>
           )}
 
@@ -450,6 +466,7 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
                 placeholder="PIN (optional)"
                 className={`w-full px-3 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
               />
+              <p className={`text-xs ${currentTheme.colors.textMuted} mt-2`}>Gift card balance will be applied</p>
             </div>
           )}
 
@@ -462,6 +479,14 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
               </button>
             </div>
           )}
+
+          {/* Currency Info Footer */}
+          <div className={`p-2 ${currentTheme.colors.accentLight} rounded-lg`}>
+            <div className="flex justify-between items-center text-xs">
+              <span className={currentTheme.colors.textSecondary}>Currency:</span>
+              <span className={currentTheme.colors.text}>{currency.code} - {currency.name} ({getCurrencySymbol()})</span>
+            </div>
+          </div>
         </div>
 
         {/* Footer */}
@@ -483,22 +508,14 @@ export default function PaymentModal({ isOpen, onClose, total, onPaymentComplete
               <button
                 onClick={handlePayment}
                 disabled={isProcessing || !canProceed}
-                className={`flex-1 px-4 py-2 rounded-lg bg-gradient-to-r ${
-                  insufficientAction === 'installment' 
-                    ? 'from-blue-500 to-blue-600' 
-                    : insufficientAction === 'credit'
-                    ? 'from-purple-500 to-purple-600'
-                    : currentTheme.colors.accent
-                } text-white font-semibold hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`flex-1 px-4 py-2 rounded-lg bg-gradient-to-r ${getButtonGradient()} text-white font-semibold hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all`}
               >
                 {isProcessing ? (
                   <span className="flex items-center justify-center gap-2">
                     <Icons.refresh className="animate-spin" /> Processing...
                   </span>
                 ) : (
-                  insufficientAction === 'installment' ? 'Start Installment' :
-                  insufficientAction === 'credit' ? 'Create Credit Sale' :
-                  'Complete Payment'
+                  getButtonText()
                 )}
               </button>
             );
