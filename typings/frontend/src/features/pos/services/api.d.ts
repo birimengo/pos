@@ -76,7 +76,7 @@ declare interface paramsType {
 
 	deleteCustomer(id: any): Promise<{	}>;
 
-	getAllCustomers(): Promise<null | {	}>;
+	getAllCustomers(): Promise<{	}>;
 
 	getCustomer(id: any): Promise<{	}>;
 
@@ -85,12 +85,6 @@ declare interface paramsType {
 	getCustomersByEmail(email: any): Promise<{	}>;
 
 	searchCustomers(query: any): Promise<{	}>;
-
-	getCustomerStats(): Promise<{	}>;
-
-	toggleStoreStatus(storeId: any): Promise<null | {	}>;
-
-	updateStoreHours(storeId: any, openTime: any, closeTime: any): Promise<null | {	}>;
 
 	addStockHistory(productId: any, historyData: any): Promise<{	}>;
 
@@ -116,21 +110,9 @@ declare interface paramsType {
 
 	setDefaultStore(id: any): Promise<{	}>;
 
-	getStoreUsers(storeId: any): Promise<{	}>;
-
-	assignUserToStore(storeId: any, userId: any): Promise<{	}>;
-
-	removeUserFromStore(storeId: any, userId: any): Promise<{	}>;
-
-	getAllUsersForAssignment(): Promise<{	}>;
-
-	getUserStores(userId: any): Promise<{	}>;
-
 	createTransfer(transferData: any): Promise<{	}>;
 
-	getAllTransfers(storeId: any): Promise<{	}>;
-
-	getTransfersByStore(storeId: any): Promise<{	}>;
+	getAllTransfers(): Promise<{	}>;
 
 	getTransfer(id: any): Promise<{	}>;
 

@@ -1,10 +1,11 @@
 
-declare interface backupType {}
+declare interface queryType {}
 
-declare interface rolePermissionsType {}
+declare interface queryType {}
 
-declare interface rolePermissionsType {}
-eryType {}
+declare interface queryType {}
+
+declare interface queryType {}
 
 declare interface queryType {}
 

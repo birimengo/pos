@@ -1,6 +1,6 @@
 // src/features/pos/POSLayout.jsx
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useTheme } from '../../context/ThemeContext';
 import { usePOS } from './context/POSContext';
 import { useStore } from './context/StoreContext';
@@ -17,7 +17,6 @@ import EmployeeManagement from './employees/EmployeeManagement';
 import MultiStore from './stores/MultiStore';
 import CloudSyncManager from './components/CloudSyncManager';
 import StoreBadge from './components/StoreBadge';
-import StoreStatusBadge from './components/StoreStatusBadge';
 
 // Import new components
 import Records from './records/Records';
@@ -33,24 +32,11 @@ export default function POSLayout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
   const [showCloudSync, setShowCloudSync] = useState(false);
-  const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
-  const [localStoreStatus, setLocalStoreStatus] = useState(null);
   const location = useLocation();
   const { theme, getTheme } = useTheme();
   const { state } = usePOS();
-  const { 
-    activeStore, 
-    stores, 
-    switchStore, 
-    refreshStores, 
-    refreshStoreStatus,
-    isStoreOpen, 
-    getStoreStatusText,
-    forceUpdate
-  } = useStore();
+  const { activeStore, stores, switchStore, refreshStores } = useStore();
   const currentTheme = getTheme(theme);
-  const isMountedRef = useRef(true);
-  const isRefreshingRef = useRef(false);
 
   // Track window size for responsive behavior
   useEffect(() => {
@@ -72,15 +58,7 @@ export default function POSLayout() {
   // Close mobile menu when route changes
   useEffect(() => {
     setIsMobileMenuOpen(false);
-    setStoreDropdownOpen(false);
   }, [location]);
-
-  // Update local store status when activeStore changes
-  useEffect(() => {
-    if (activeStore) {
-      setLocalStoreStatus(activeStore.open);
-    }
-  }, [activeStore, forceUpdate]);
 
   // Sync active store with API service
   useEffect(() => {
@@ -92,50 +70,12 @@ export default function POSLayout() {
 
   // Load stores on mount
   useEffect(() => {
-    const loadStoresData = async () => {
-      if (refreshStores && !isRefreshingRef.current) {
-        isRefreshingRef.current = true;
+    const loadStores = async () => {
+      if (refreshStores) {
         await refreshStores();
-        isRefreshingRef.current = false;
       }
     };
-    loadStoresData();
-  }, [refreshStores]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
-  // Listen for store status refreshes (not status-changed to avoid loops)
-  useEffect(() => {
-    const handleStatusRefresh = async (event) => {
-      console.log('🔄 Store status refreshed, updating UI...', event?.detail);
-      // Only update UI, don't trigger another refresh
-      if (event?.detail?.isOpen !== undefined && isMountedRef.current) {
-        setLocalStoreStatus(event.detail.isOpen);
-      }
-    };
-    
-    const handleStoreSwitch = async (event) => {
-      console.log('🔄 Store switched, refreshing data...', event?.detail);
-      if (refreshStores && !isRefreshingRef.current && isMountedRef.current) {
-        isRefreshingRef.current = true;
-        await refreshStores();
-        isRefreshingRef.current = false;
-      }
-    };
-    
-    window.addEventListener('store-status-refreshed', handleStatusRefresh);
-    window.addEventListener('store-switched', handleStoreSwitch);
-    
-    return () => {
-      window.removeEventListener('store-status-refreshed', handleStatusRefresh);
-      window.removeEventListener('store-switched', handleStoreSwitch);
-    };
+    loadStores();
   }, [refreshStores]);
 
   const isMobile = windowWidth < 768;
@@ -206,6 +146,7 @@ export default function POSLayout() {
     }
   };
 
+  // Calculate sidebar width based on screen size and state
   const getSidebarWidth = () => {
     if (isMobile) {
       return isMobileMenuOpen ? 'w-56' : 'w-0';
@@ -216,20 +157,15 @@ export default function POSLayout() {
     return isSidebarOpen ? 'w-48' : 'w-16';
   };
 
+  // Handle store switching from header dropdown
   const handleStoreSwitch = async (storeId) => {
-    setStoreDropdownOpen(false);
-    if (isRefreshingRef.current) return;
-    
-    isRefreshingRef.current = true;
     const result = await switchStore(storeId);
-    if (result.success && isMountedRef.current) {
+    if (result.success) {
       console.log(`✅ Switched to ${result.store.name}`);
-      await refreshStores();
+      // Refresh the page data after store switch
+      window.location.reload();
     }
-    isRefreshingRef.current = false;
   };
-
-  const currentStatus = localStoreStatus !== null ? localStoreStatus : (activeStore?.open || false);
 
   return (
     <div className={`flex h-screen ${currentTheme.colors.bg} transition-colors duration-300 overflow-hidden`}>
@@ -301,6 +237,7 @@ export default function POSLayout() {
                   </span>
                 )}
                 
+                {/* Tooltip for collapsed sidebar */}
                 {!isSidebarOpen && !isMobile && (
                   <span className="absolute left-full ml-1 px-1.5 py-0.5 bg-gray-800 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none shadow-lg">
                     {item.name}
@@ -329,7 +266,6 @@ export default function POSLayout() {
             <div className="flex items-center gap-1">
               <Icons.store className="text-xs flex-shrink-0" />
               <span className="truncate">{activeStore.name}</span>
-              <span className={`w-1.5 h-1.5 rounded-full ${currentStatus ? 'bg-green-500' : 'bg-red-500'}`}></span>
             </div>
           </div>
         )}
@@ -355,49 +291,25 @@ export default function POSLayout() {
             </h1>
           </div>
           
-          <div className="flex items-center gap-1">
-            {/* Store Status Badge */}
-            <StoreStatusBadge />
-            
+          <div className="flex items-center gap-0.5">
             {/* Store Badge / Selector */}
             <StoreBadge />
             
             {/* Store Dropdown for multiple stores */}
             {stores && stores.length > 1 && !isMobile && activeStore && (
-              <div className="relative">
-                <button
-                  onClick={() => setStoreDropdownOpen(!storeDropdownOpen)}
-                  className={`px-1.5 py-1 text-[9px] rounded border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} flex items-center gap-1`}
-                >
-                  <span className="truncate max-w-[80px]">{activeStore.name}</span>
-                  <Icons.chevronDown className="text-[8px]" />
-                </button>
-                
-                {storeDropdownOpen && (
-                  <div className={`absolute right-0 mt-1 w-48 ${currentTheme.colors.card} rounded-lg shadow-xl border ${currentTheme.colors.border} z-50 overflow-hidden`}>
-                    {stores.map(store => (
-                      <button
-                        key={store._id}
-                        onClick={() => handleStoreSwitch(store._id)}
-                        className={`w-full px-3 py-2 text-left text-xs hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center justify-between ${
-                          activeStore._id === store._id ? `bg-blue-50 dark:bg-blue-900/20 ${currentTheme.accentText}` : ''
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Icons.store className="text-[10px]" />
-                          <span>{store.name}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className={`w-1.5 h-1.5 rounded-full ${store.open ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                          {store.isDefault && (
-                            <span className="text-[8px] px-1 bg-blue-100 text-blue-700 rounded">Main</span>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <select
+                className={`px-1.5 py-1 text-[9px] rounded border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} max-w-[100px]`}
+                value={activeStore.id}
+                onChange={(e) => handleStoreSwitch(e.target.value)}
+                title="Switch Store"
+              >
+                {stores.map(store => (
+                  <option key={store.id} value={store.id}>
+                    {store.name.length > 10 ? store.name.substring(0, 10) + '...' : store.name}
+                    {store.isDefault && ' (Main)'}
+                  </option>
+                ))}
+              </select>
             )}
 
             {/* Cloud Sync Button */}
@@ -413,14 +325,10 @@ export default function POSLayout() {
             {/* Theme Switcher */}
             <button
               onClick={() => {
-                const themes = ['light', 'dark', 'ocean'];
-                const currentIndex = themes.indexOf(theme);
-                const nextTheme = themes[(currentIndex + 1) % themes.length];
-                localStorage.setItem('theme', nextTheme);
-                window.dispatchEvent(new CustomEvent('theme-change', { detail: { theme: nextTheme } }));
+                // Theme toggle logic would go here
               }}
               className={`p-1 rounded-lg ${currentTheme.colors.hover}`}
-              title="Change Theme"
+              title="Theme"
             >
               {theme === 'light' && <Icons.sun className="text-amber-500 text-sm" />}
               {theme === 'dark' && <Icons.moon className="text-indigo-400 text-sm" />}

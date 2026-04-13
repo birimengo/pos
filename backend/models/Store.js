@@ -55,10 +55,6 @@ const storeSchema = new mongoose.Schema({
     type: String, 
     default: 'UTC' 
   },
-  open: { 
-    type: Boolean, 
-    default: true 
-  },
   settings: {
     receiptHeader: { 
       type: String, 
@@ -116,7 +112,6 @@ storeSchema.index({ name: 1 });
 storeSchema.index({ createdBy: 1 });
 storeSchema.index({ isDefault: 1 });
 storeSchema.index({ active: 1 });
-storeSchema.index({ open: 1 });
 
 // Prevent model overwrite
 const Store = mongoose.models.Store || mongoose.model('Store', storeSchema);
