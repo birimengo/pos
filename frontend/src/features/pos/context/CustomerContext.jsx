@@ -1,7 +1,7 @@
 // src/features/pos/context/CustomerContext.jsx
-
-import { createContext, useContext, useReducer, useEffect } from 'react';
+import { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
 import { db } from '../services/database';
+import { useStore } from './StoreContext';
 
 const CustomerContext = createContext();
 
@@ -9,13 +9,21 @@ const initialState = {
   customers: [],
   selectedCustomer: null,
   searchTerm: '',
-  isLoading: false
+  isLoading: false,
+  currentStoreId: null,
+  lastLoaded: null
 };
 
 function customerReducer(state, action) {
   switch (action.type) {
     case 'SET_CUSTOMERS':
-      return { ...state, customers: action.payload };
+      return { 
+        ...state, 
+        customers: action.payload, 
+        isLoading: false,
+        currentStoreId: action.storeId,
+        lastLoaded: new Date().toISOString()
+      };
     case 'SELECT_CUSTOMER':
       return { ...state, selectedCustomer: action.payload };
     case 'CLEAR_SELECTED_CUSTOMER':
@@ -68,6 +76,8 @@ function customerReducer(state, action) {
       return { ...state, searchTerm: action.payload };
     case 'SET_LOADING':
       return { ...state, isLoading: action.payload };
+    case 'CLEAR_CUSTOMERS':
+      return { ...state, customers: [], currentStoreId: null };
     default:
       return state;
   }
@@ -75,83 +85,206 @@ function customerReducer(state, action) {
 
 export function CustomerProvider({ children }) {
   const [state, dispatch] = useReducer(customerReducer, initialState);
+  const { activeStore, currentStoreId: activeStoreId } = useStore();
 
-  const loadCustomers = async () => {
+  // Load customers for the current store
+  const loadCustomers = useCallback(async (storeId = null) => {
+    const targetStoreId = storeId || activeStoreId || activeStore?.id;
+    
+    if (!targetStoreId) {
+      console.log('⏳ No store selected, skipping customer load');
+      dispatch({ type: 'SET_LOADING', payload: false });
+      dispatch({ type: 'CLEAR_CUSTOMERS' });
+      return;
+    }
+    
+    // Don't reload if already loaded for this store
+    if (state.currentStoreId === targetStoreId && state.customers.length > 0 && !state.isLoading) {
+      console.log(`📦 Using cached customers for store: ${targetStoreId}`);
+      return;
+    }
+    
+    console.log(`🔄 Loading customers for store: ${targetStoreId}`);
+    dispatch({ type: 'SET_LOADING', payload: true });
+    
     try {
-      dispatch({ type: 'SET_LOADING', payload: true });
       await db.ensureInitialized();
       
-      // Load customers from IndexedDB
-      const customers = await db.getCustomers();
+      // Get customers filtered by store from IndexedDB
+      const allCustomers = await db.getAll('customers');
+      const storeCustomers = allCustomers.filter(c => 
+        String(c.storeId) === String(targetStoreId)
+      );
       
-      if (customers && customers.length > 0) {
-        // Normalize customer data
-        const normalizedCustomers = customers.map(c => ({
+      if (storeCustomers && storeCustomers.length > 0) {
+        const normalizedCustomers = storeCustomers.map(c => ({
           ...c,
           id: String(c.id),
           totalSpent: c.totalSpent || 0,
           transactionCount: c.transactionCount || 0,
           loyaltyPoints: c.loyaltyPoints || 0
         }));
-        dispatch({ type: 'SET_CUSTOMERS', payload: normalizedCustomers });
-        console.log(`✅ Loaded ${normalizedCustomers.length} customers from IndexedDB`);
+        dispatch({ 
+          type: 'SET_CUSTOMERS', 
+          payload: normalizedCustomers,
+          storeId: targetStoreId
+        });
+        console.log(`✅ Loaded ${normalizedCustomers.length} customers for store ${targetStoreId}`);
       } else {
-        // Fallback to localStorage
-        const saved = localStorage.getItem('pos-customers');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          const normalized = parsed.map(c => ({ ...c, id: String(c.id) }));
-          dispatch({ type: 'SET_CUSTOMERS', payload: normalized });
-          console.log(`✅ Loaded ${normalized.length} customers from localStorage`);
-        } else {
-          console.log('📭 No customers found');
-        }
+        dispatch({ 
+          type: 'SET_CUSTOMERS', 
+          payload: [],
+          storeId: targetStoreId
+        });
+        console.log(`📭 No customers found for store ${targetStoreId}`);
       }
+      
+      // Also save to localStorage with store-specific key for backup
+      if (storeCustomers.length > 0) {
+        const backupKey = `pos-customers-${targetStoreId}`;
+        localStorage.setItem(backupKey, JSON.stringify(storeCustomers));
+      }
+      
     } catch (error) {
       console.error('Failed to load customers:', error);
+      
+      // Fallback to store-specific localStorage
+      const backupKey = `pos-customers-${targetStoreId}`;
+      const saved = localStorage.getItem(backupKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const normalized = parsed.map(c => ({ ...c, id: String(c.id) }));
+          dispatch({ 
+            type: 'SET_CUSTOMERS', 
+            payload: normalized,
+            storeId: targetStoreId
+          });
+          console.log(`📦 Loaded ${normalized.length} customers from localStorage backup for store ${targetStoreId}`);
+        } catch (e) {
+          console.error('Failed to parse backup customers:', e);
+        }
+      }
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  };
+  }, [activeStoreId, activeStore, state.currentStoreId, state.customers.length, state.isLoading]);
 
-  // Load customers on mount
+  // Load customers when store changes
   useEffect(() => {
-    loadCustomers();
-  }, []);
+    const storeId = activeStoreId || activeStore?.id;
+    if (storeId) {
+      loadCustomers(storeId);
+    } else {
+      dispatch({ type: 'CLEAR_CUSTOMERS' });
+      dispatch({ type: 'SET_LOADING', payload: false });
+    }
+  }, [activeStoreId, activeStore, loadCustomers]);
+
+  // Listen for store switch events
+  useEffect(() => {
+    const handleStoreSwitch = (event) => {
+      console.log('🔄 Store switched, reloading customers for new store...', event.detail);
+      const newStoreId = event.detail?.storeId || event.detail?.store?._id;
+      if (newStoreId) {
+        loadCustomers(newStoreId);
+      }
+    };
+
+    const handleRefreshCustomers = () => {
+      console.log('🔄 Refresh customers requested');
+      const storeId = activeStoreId || activeStore?.id;
+      if (storeId) {
+        loadCustomers(storeId);
+      }
+    };
+
+    window.addEventListener('store-switched', handleStoreSwitch);
+    window.addEventListener('refresh-customers', handleRefreshCustomers);
+    
+    return () => {
+      window.removeEventListener('store-switched', handleStoreSwitch);
+      window.removeEventListener('refresh-customers', handleRefreshCustomers);
+    };
+  }, [activeStoreId, activeStore, loadCustomers]);
 
   // Listen for cloud restore events to reload data
   useEffect(() => {
     const handleDataRestored = async (event) => {
       console.log('🔄 Cloud data restored, reloading customers...', event.detail);
-      await loadCustomers();
-    };
-
-    // Listen for storage events (for cross-tab sync)
-    const handleStorageChange = (e) => {
-      if (e.key === 'lastRestore' || e.key === 'pos-customers') {
-        console.log('🔄 Storage changed, reloading customers...');
-        loadCustomers();
+      const storeId = activeStoreId || activeStore?.id;
+      if (storeId) {
+        await loadCustomers(storeId);
       }
     };
 
     window.addEventListener('cloud-data-restored', handleDataRestored);
-    window.addEventListener('storage', handleStorageChange);
-
+    
     return () => {
       window.removeEventListener('cloud-data-restored', handleDataRestored);
-      window.removeEventListener('storage', handleStorageChange);
     };
-  }, []);
+  }, [activeStoreId, activeStore, loadCustomers]);
 
-  // Save customers to localStorage as backup
+  // Save customers to store-specific localStorage as backup when they change
   useEffect(() => {
-    if (state.customers.length > 0) {
-      localStorage.setItem('pos-customers', JSON.stringify(state.customers));
+    if (state.customers.length > 0 && state.currentStoreId) {
+      const backupKey = `pos-customers-${state.currentStoreId}`;
+      localStorage.setItem(backupKey, JSON.stringify(state.customers));
     }
-  }, [state.customers]);
+  }, [state.customers, state.currentStoreId]);
+
+  // Method to add a customer and save to current store
+  const addCustomer = useCallback(async (customerData) => {
+    const storeId = activeStoreId || activeStore?.id;
+    if (!storeId) {
+      console.error('Cannot add customer: No active store');
+      return { success: false, error: 'No active store' };
+    }
+    
+    const newCustomer = {
+      ...customerData,
+      id: String(Date.now()),
+      storeId: storeId,
+      joinDate: new Date().toISOString().split('T')[0],
+      lastVisit: new Date().toISOString().split('T')[0],
+      loyaltyPoints: 0,
+      totalSpent: 0,
+      transactionCount: 0,
+      creditCount: 0,
+      installmentCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    dispatch({ type: 'ADD_CUSTOMER', payload: newCustomer });
+    
+    // Save to IndexedDB
+    await db.saveCustomer(newCustomer);
+    
+    return { success: true, customer: newCustomer };
+  }, [activeStoreId, activeStore]);
+
+  // Method to refresh customers manually
+  const refreshCustomers = useCallback(() => {
+    const storeId = activeStoreId || activeStore?.id;
+    if (storeId) {
+      loadCustomers(storeId);
+    }
+  }, [activeStoreId, activeStore, loadCustomers]);
+
+  const value = {
+    state,
+    dispatch,
+    reloadCustomers: refreshCustomers,
+    addCustomer,
+    refreshCustomers,
+    getCustomersForCurrentStore: () => state.customers,
+    getCustomerCount: () => state.customers.length,
+    isStoreLoaded: state.currentStoreId === (activeStoreId || activeStore?.id)
+  };
 
   return (
-    <CustomerContext.Provider value={{ state, dispatch, reloadCustomers: loadCustomers }}>
+    <CustomerContext.Provider value={value}>
       {children}
     </CustomerContext.Provider>
   );

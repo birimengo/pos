@@ -1,56 +1,162 @@
-// src/features/pos/settings/Settings.jsx - Add StoreSwitcher import and tab
-import { useState, useEffect } from 'react';
+// src/features/pos/settings/Settings.jsx
+import { useState, useEffect, useCallback } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../../../features/auth/AuthContext';
+import { useStore } from '../context/StoreContext';
 import { Icons } from '../../../components/ui/Icons';
 import StoreSettings from './StoreSettings';
 import UserManagement from './UserManagement';
 import BackupRestore from './BackupRestore';
 import AppearanceSettings from './AppearanceSettings';
 import SystemSettings from './SystemSettings';
-import StoreSwitcher from './StoreSwitcher'; // Add this import
+import StoreSwitcher from './StoreSwitcher';
+import { api } from '../services/api';
+import { db } from '../services/database';
 
-// Safe icon wrapper component
 const SafeIcon = ({ icon: Icon, className, fallback = '•' }) => {
-  if (!Icon) {
-    return <span className={className}>{fallback}</span>;
-  }
+  if (!Icon) return <span className={className}>{fallback}</span>;
   return <Icon className={className} />;
 };
 
 export default function Settings() {
   const [activeTab, setActiveTab] = useState('store');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [currentStore, setCurrentStore] = useState(null);
+  const [loadingStore, setLoadingStore] = useState(true);
+  const [storeUpdateTrigger, setStoreUpdateTrigger] = useState(0);
+  const [userStores, setUserStores] = useState([]);
+  
   const { theme, getTheme } = useTheme();
   const { state, dispatch } = useSettings();
-  const { logout, user, hasPermission, hasRole } = useAuth();
+  const { logout, user, hasPermission, hasRole, isAdmin, refreshUserStores } = useAuth();
+  const { activeStore, getCurrentStore, refreshStores, stores } = useStore();
   const currentTheme = getTheme(theme);
 
+  // Load current store information - ALWAYS use the active store from context
+  useEffect(() => {
+    loadCurrentStore();
+  }, [activeStore, storeUpdateTrigger, stores]);
+
+  // Load user's stores
+  useEffect(() => {
+    loadUserStores();
+  }, []);
+
+  const loadUserStores = async () => {
+    try {
+      const response = await api.getAllStores();
+      if (response.success && response.stores) {
+        // Filter stores that belong to current user
+        const filteredStores = response.stores.filter(store => 
+          store.createdBy === user?.id
+        );
+        setUserStores(filteredStores);
+        console.log(`📦 Loaded ${filteredStores.length} stores for user ${user?.email}`);
+      }
+    } catch (error) {
+      console.error('Failed to load user stores:', error);
+    }
+  };
+
+  const loadCurrentStore = async () => {
+    setLoadingStore(true);
+    try {
+      let store = null;
+      
+      // Priority 1: Use activeStore from context
+      if (activeStore) {
+        // Verify this store belongs to the current user
+        if (activeStore.createdBy === user?.id) {
+          store = activeStore;
+          console.log('📦 Using activeStore from context:', store.name);
+        } else {
+          console.warn('⚠️ Active store does not belong to current user, finding correct store');
+        }
+      }
+      
+      // Priority 2: Get from database using currentStoreId
+      if (!store) {
+        const activeStoreId = db.getCurrentStore();
+        if (activeStoreId) {
+          const dbStore = await db.getStore(activeStoreId);
+          if (dbStore && dbStore.createdBy === user?.id) {
+            store = dbStore;
+            console.log('📦 Loaded store from database:', store.name);
+          }
+        }
+      }
+      
+      // Priority 3: Get the user's first store from API
+      if (!store && userStores.length > 0) {
+        store = userStores[0];
+        console.log('📦 Using first user store from list:', store.name);
+      }
+      
+      // Priority 4: Get default store from API
+      if (!store) {
+        const response = await api.getDefaultStore();
+        if (response.success && response.store && response.store.createdBy === user?.id) {
+          store = response.store;
+          console.log('📦 Loaded default store from API:', store.name);
+        }
+      }
+      
+      if (store) {
+        setCurrentStore(store);
+        console.log('✅ Current store loaded in Settings:', store.name);
+        console.log('📦 Store details:', {
+          id: store._id,
+          name: store.name,
+          phone: store.phone,
+          address: store.address,
+          createdBy: store.createdBy,
+          currentUser: user?.id
+        });
+      } else {
+        console.warn('⚠️ No store found for current user');
+        setCurrentStore(null);
+      }
+    } catch (error) {
+      console.error('Failed to load current store:', error);
+      setCurrentStore(null);
+    } finally {
+      setLoadingStore(false);
+    }
+  };
+
+  const handleStoreUpdate = () => {
+    // Refresh store data after update
+    setStoreUpdateTrigger(prev => prev + 1);
+    if (refreshStores) refreshStores();
+    loadUserStores();
+  };
+
+  const handleStoreSwitch = () => {
+    // Reload current store after switching
+    loadCurrentStore();
+    loadUserStores();
+  };
+
   // Check user permissions
-  const isAdmin = hasRole('admin');
   const canManageUsers = hasPermission('manage_users') || isAdmin;
   const canManageSettings = hasPermission('manage_settings') || isAdmin;
 
-  // Define tabs based on user permissions
   const getAllTabs = () => {
     const allTabs = [
       { id: 'store', name: 'Store Info', icon: Icons.home, permission: null, adminOnly: false },
       { id: 'appearance', name: 'Appearance', icon: Icons.star, permission: null, adminOnly: false },
-      { id: 'storeSwitcher', name: 'Switch Store', icon: Icons.switch, permission: null, adminOnly: false }, // Add this tab
+      { id: 'storeSwitcher', name: 'Switch Store', icon: Icons.switch, permission: null, adminOnly: false },
     ];
 
-    // Only show Users tab for admin or users with manage_users permission
     if (canManageUsers) {
       allTabs.push({ id: 'users', name: 'Users', icon: Icons.users, permission: 'manage_users', adminOnly: true });
     }
 
-    // Only show Backup tab for admin
     if (isAdmin) {
       allTabs.push({ id: 'backup', name: 'Backup & Restore', icon: Icons.download, permission: null, adminOnly: true });
     }
 
-    // Only show System tab for admin or users with manage_settings permission
     if (canManageSettings) {
       allTabs.push({ id: 'system', name: 'System', icon: Icons.settings, permission: 'manage_settings', adminOnly: true });
     }
@@ -78,7 +184,6 @@ export default function Settings() {
     }
   };
 
-  // If user doesn't have permission to view any settings tabs
   if (tabs.length === 0) {
     return (
       <div className={`p-8 text-center ${currentTheme.colors.card} rounded-lg border ${currentTheme.colors.border}`}>
@@ -126,17 +231,84 @@ export default function Settings() {
         </div>
       </div>
 
+      {/* No Store Warning */}
+      {!loadingStore && !currentStore && (
+        <div className={`p-4 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800`}>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-yellow-100 flex items-center justify-center">
+              <Icons.alert className="text-yellow-600" />
+            </div>
+            <div>
+              <p className={`text-sm font-medium text-yellow-800 dark:text-yellow-400`}>
+                No Store Found
+              </p>
+              <p className={`text-xs text-yellow-700 dark:text-yellow-500 mt-0.5`}>
+                You don't have any stores yet. Please create a store in Multi-Store Management.
+              </p>
+              <button
+                onClick={() => window.location.href = '/pos/stores'}
+                className="mt-2 text-xs px-3 py-1 rounded-lg bg-yellow-600 text-white hover:bg-yellow-700"
+              >
+                Go to Multi-Store Management
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Current Store Info Banner - Shows which store is being edited */}
+      {!loadingStore && currentStore && (
+        <div className={`p-4 rounded-lg ${currentTheme.colors.accentLight} border ${currentTheme.colors.border}`}>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white">
+                <Icons.store className="text-sm" />
+              </div>
+              <div>
+                <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Currently Editing Store</p>
+                <p className={`text-base font-semibold ${currentTheme.colors.text}`}>{currentStore.name}</p>
+                <p className={`text-xs ${currentTheme.colors.textMuted}`}>
+                  {currentStore.address || 'No address set'} • {currentStore.phone || 'No phone'}
+                </p>
+                <p className={`text-[10px] ${currentTheme.colors.textMuted} mt-0.5`}>
+                  ID: {currentStore._id} • Created by: {currentStore.createdByName || currentStore.createdBy}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {currentStore.isDefault && (
+                <span className="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-700">
+                  Main Store
+                </span>
+              )}
+              {currentStore.open ? (
+                <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">
+                  Open
+                </span>
+              ) : (
+                <span className="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">
+                  Closed
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* User Info Bar */}
       {user && (
         <div className={`p-3 rounded-lg ${currentTheme.colors.accentLight} border ${currentTheme.colors.border}`}>
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold">
-                {user.name?.charAt(0).toUpperCase()}
+                {user.name?.charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase()}
               </div>
               <div>
-                <p className={`text-sm font-medium ${currentTheme.colors.text}`}>{user.name}</p>
+                <p className={`text-sm font-medium ${currentTheme.colors.text}`}>{user.name || user.email}</p>
                 <p className={`text-xs ${currentTheme.colors.textMuted}`}>{user.email} • {user.role}</p>
+                <p className={`text-[10px] ${currentTheme.colors.textMuted} mt-0.5`}>
+                  User ID: {user.id}
+                </p>
               </div>
             </div>
             <div className="flex gap-2">
@@ -148,11 +320,9 @@ export default function Settings() {
               }`}>
                 {user.role?.replace('_', ' ') || 'Cashier'}
               </span>
-              {!isAdmin && (
-                <span className="text-xs px-2 py-1 rounded-full bg-yellow-100 text-yellow-700">
-                  Limited Access
-                </span>
-              )}
+              <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-600">
+                Stores: {userStores.length}
+              </span>
             </div>
           </div>
         </div>
@@ -185,8 +355,15 @@ export default function Settings() {
 
       {/* Settings Content */}
       <div className={`${currentTheme.colors.card} rounded-lg p-6 border ${currentTheme.colors.border}`}>
-        {activeTab === 'store' && <StoreSettings />}
-        {activeTab === 'storeSwitcher' && <StoreSwitcher />} {/* Add this line */}
+        {activeTab === 'store' && (
+          <StoreSettings 
+            currentStore={currentStore} 
+            onStoreUpdate={handleStoreUpdate}
+          />
+        )}
+        {activeTab === 'storeSwitcher' && (
+          <StoreSwitcher onStoreSwitch={handleStoreSwitch} />
+        )}
         {activeTab === 'users' && <UserManagement />}
         {activeTab === 'appearance' && <AppearanceSettings />}
         {activeTab === 'backup' && <BackupRestore />}

@@ -1,2 +1,6 @@
 
-declare interface updateDataType {}
+declare interface backupType {}
+
+declare interface rolePermissionsType {}
+
+declare interface rolePermissionsType {}

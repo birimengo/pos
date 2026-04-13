@@ -2,20 +2,23 @@
 import { useState, useEffect } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useStore } from '../context/StoreContext';
+import { useAuth } from '../../../features/auth/AuthContext';
 import { Icons } from '../../../components/ui/Icons';
 import { db } from '../services/database';
+import { api } from '../services/api';
 
 const SafeIcon = ({ icon: Icon, className, fallback = '•' }) => {
   if (!Icon) return <span className={className}>{fallback}</span>;
   return <Icon className={className} />;
 };
 
-export default function StoreSwitcher() {
+export default function StoreSwitcher({ onStoreSwitch }) {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(false);
   const [switchedStore, setSwitchedStore] = useState(null);
   const { activeStore, switchStore, refreshStores } = useStore();
+  const { user, isAdmin } = useAuth();
   const { theme, getTheme } = useTheme();
   const currentTheme = getTheme(theme);
 
@@ -27,8 +30,20 @@ export default function StoreSwitcher() {
     setLoading(true);
     try {
       await db.ensureInitialized();
-      const allStores = await db.getAll('stores');
-      setStores(allStores || []);
+      // Get stores from API (filtered by current user)
+      const response = await api.getAllStores();
+      if (response.success) {
+        const userStores = response.stores || [];
+        setStores(userStores);
+        console.log(`📦 Loaded ${userStores.length} stores for user ${user?.email}`);
+        userStores.forEach(store => {
+          console.log(`  - Store: ${store.name} (ID: ${store._id}, Default: ${store.isDefault})`);
+        });
+      } else {
+        // Fallback to IndexedDB
+        const allStores = await db.getAllStores();
+        setStores(allStores || []);
+      }
     } catch (error) {
       console.error('Failed to load stores:', error);
     } finally {
@@ -40,21 +55,54 @@ export default function StoreSwitcher() {
     setSwitching(true);
     setSwitchedStore(null);
     
+    console.log(`🔄 Switching to store: ${storeId}`);
+    
     const result = await switchStore(storeId);
     
     if (result.success) {
       setSwitchedStore(result.store);
+      console.log(`✅ Switched to store: ${result.store.name}`);
+      
+      // Clear all store-specific caches to ensure fresh data
+      // This will trigger reload of inventory, customers, etc.
+      
+      // Dispatch event for other components to react
+      window.dispatchEvent(new CustomEvent('store-switched', { 
+        detail: { store: result.store, storeId: storeId }
+      }));
+      
+      // Trigger refresh of all data for the new store
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('refresh-store-data', { 
+          detail: { storeId: storeId }
+        }));
+      }, 100);
+      
+      // Notify parent component
+      if (onStoreSwitch) onStoreSwitch();
+      
+      // Reload stores to update active status
+      await loadStores();
+      
       // Show success message
       setTimeout(() => {
         setSwitchedStore(null);
       }, 3000);
-      // Reload stores to update active status
-      await loadStores();
     } else {
       alert(`❌ Failed to switch store: ${result.error}`);
     }
     
     setSwitching(false);
+  };
+
+  // Get inventory count for a store
+  const getStoreInventoryCount = async (storeId) => {
+    try {
+      const products = await db.getAllByStore('products', storeId);
+      return products.length;
+    } catch (error) {
+      return 0;
+    }
   };
 
   if (loading) {
@@ -70,9 +118,11 @@ export default function StoreSwitcher() {
       <div className={`p-8 text-center rounded-lg border ${currentTheme.colors.border}`}>
         <SafeIcon icon={Icons.store} className="text-4xl mx-auto mb-3 text-gray-400" fallback="🏪" />
         <p className={`text-sm ${currentTheme.colors.textMuted}`}>No stores available</p>
-        <p className={`text-xs ${currentTheme.colors.textMuted} mt-1`}>
-          Add stores in the Multi-Store Management section
-        </p>
+        {isAdmin && (
+          <p className={`text-xs ${currentTheme.colors.textMuted} mt-1`}>
+            Click the "Add Store" button in Multi-Store Management to create your first store
+          </p>
+        )}
       </div>
     );
   }
@@ -97,6 +147,9 @@ export default function StoreSwitcher() {
                 {activeStore.city && `${activeStore.city}`}
                 {!activeStore.address && !activeStore.city && 'No address set'}
               </p>
+              <p className={`text-[10px] ${currentTheme.colors.textMuted} mt-0.5`}>
+                📞 {activeStore.phone || 'No phone'} • 🕐 {activeStore.openTime} - {activeStore.closeTime}
+              </p>
             </div>
             <div className={`px-3 py-1 rounded-full bg-green-100 text-green-700 text-xs font-medium`}>
               Active
@@ -112,11 +165,11 @@ export default function StoreSwitcher() {
         </h3>
         <div className="space-y-2 max-h-96 overflow-y-auto">
           {stores.map(store => {
-            const isActive = activeStore?.id === store.id;
+            const isActive = activeStore?.id === store._id || activeStore?._id === store._id;
             
             return (
               <div
-                key={store.id}
+                key={store._id}
                 className={`p-3 rounded-lg border transition-all ${
                   isActive 
                     ? `${currentTheme.colors.accentLight} border-green-500 bg-green-50 dark:bg-green-900/10`
@@ -172,14 +225,14 @@ export default function StoreSwitcher() {
                     
                     <div className="flex gap-3 mt-2 text-[10px] text-gray-500">
                       <span>🕐 {store.openTime} - {store.closeTime}</span>
-                      <span>📦 {store.inventory || 0} items</span>
                       <span>💰 {store.taxRate}% tax</span>
+                      <span>👥 {store.users?.length || 0} employees</span>
                     </div>
                   </div>
                   
                   {!isActive && (
                     <button
-                      onClick={() => handleSwitchStore(store.id)}
+                      onClick={() => handleSwitchStore(store._id)}
                       disabled={switching}
                       className={`px-3 py-1.5 text-xs rounded-lg bg-gradient-to-r ${currentTheme.colors.accent} text-white hover:shadow-md transition-all disabled:opacity-50 ml-3 flex-shrink-0`}
                     >
@@ -222,7 +275,7 @@ export default function StoreSwitcher() {
                 Successfully switched to {switchedStore.name}!
               </p>
               <p className="text-[10px] text-green-600 dark:text-green-500 mt-0.5">
-                All data now reflects this store's inventory and settings
+                Inventory, customers, and transactions now reflect this store
               </p>
             </div>
           </div>
@@ -251,7 +304,7 @@ export default function StoreSwitcher() {
         </div>
       </div>
 
-      {/* Store Stats Summary */}
+      {/* Store Statistics */}
       <div className={`p-3 rounded-lg ${currentTheme.colors.accentLight} border ${currentTheme.colors.border}`}>
         <h4 className={`text-xs font-medium mb-2 ${currentTheme.colors.text}`}>Store Statistics</h4>
         <div className="grid grid-cols-2 gap-2 text-center">
@@ -265,7 +318,7 @@ export default function StoreSwitcher() {
           </div>
           <div>
             <p className={`text-[10px] ${currentTheme.colors.textSecondary}`}>Main Store</p>
-            <p className={`text-lg font-bold ${currentTheme.colors.text}`}>
+            <p className={`text-sm font-medium ${currentTheme.colors.text} truncate`}>
               {stores.find(s => s.isDefault)?.name || 'None'}
             </p>
           </div>

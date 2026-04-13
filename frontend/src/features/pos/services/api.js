@@ -15,6 +15,7 @@ class API {
       }
     });
     this.currentStoreId = null;
+    this.currentUserId = null;
 
     this.client.interceptors.response.use(
       response => response,
@@ -43,6 +44,11 @@ class API {
     }
   }
 
+  setCurrentUser(userId) {
+    this.currentUserId = userId;
+    console.log('👤 Current user set to:', userId);
+  }
+
   setCurrentStore(storeId) {
     this.currentStoreId = storeId;
     if (storeId) {
@@ -63,6 +69,10 @@ class API {
       return storedId;
     }
     return null;
+  }
+
+  getCurrentUserId() {
+    return this.currentUserId;
   }
 
   // ==================== BASE HTTP METHODS ====================
@@ -151,6 +161,11 @@ class API {
       console.log('🔐 Logging in user:', email);
       const response = await this.client.post('/auth/login', { email, password });
       console.log('✅ Login successful');
+      
+      if (response.data.user?.id) {
+        this.setCurrentUser(response.data.user.id);
+      }
+      
       return response.data;
     } catch (error) {
       console.error('❌ Login error:', error.response?.data?.error || error.message);
@@ -163,6 +178,11 @@ class API {
       console.log('📝 Registering new user:', userData.email);
       const response = await this.client.post('/auth/register', userData);
       console.log('✅ Registration successful');
+      
+      if (response.data.user?.id) {
+        this.setCurrentUser(response.data.user.id);
+      }
+      
       return response.data;
     } catch (error) {
       console.error('❌ Registration error:', error.response?.data?.error || error.message);
@@ -173,6 +193,11 @@ class API {
   async getCurrentUser() {
     try {
       const response = await this.client.get('/auth/me');
+      
+      if (response.data.user?.id) {
+        this.setCurrentUser(response.data.user.id);
+      }
+      
       return response.data;
     } catch (error) {
       console.error('❌ Get current user error:', error.message);
@@ -196,6 +221,7 @@ class API {
     try {
       const response = await this.client.post('/auth/logout');
       console.log('✅ Logout successful');
+      this.currentUserId = null;
       return response.data;
     } catch (error) {
       console.error('❌ Logout error:', error.message);
@@ -245,7 +271,7 @@ class API {
     try {
       console.log('👥 Fetching all users');
       const response = await this.client.get('/auth/users');
-      return { success: true, users: response.data };
+      return { success: true, users: response.data.users || response.data };
     } catch (error) {
       console.error('❌ Get users error:', error.message);
       return { success: false, error: error.message, users: [] };
@@ -532,7 +558,6 @@ class API {
     try {
       const storeId = this.getCurrentStoreId();
       
-      // ✅ FIX: If no store is selected, return empty array instead of making the request
       if (!storeId) {
         console.warn('⚠️ No store selected, returning empty transactions');
         return { success: true, transactions: [] };
@@ -619,8 +644,9 @@ class API {
   async getTransactionsByCustomer(customerId) {
     try {
       const storeId = this.getCurrentStoreId();
+      console.log(`🔍 Fetching transactions for customer: ${customerId}, store: ${storeId}`);
       const response = await this.client.get(`/customers/${customerId}/transactions`, { params: { storeId } });
-      return { success: true, transactions: response.data };
+      return { success: true, transactions: response.data.transactions || response.data };
     } catch (error) {
       console.error('❌ Get customer transactions error:', error.message);
       return { success: false, error: error.message, transactions: [] };
@@ -653,7 +679,7 @@ class API {
     }
   }
 
-  // ==================== CUSTOMER ENDPOINTS ====================
+  // ==================== CUSTOMER ENDPOINTS (WITH STORE & USER ISOLATION) ====================
 
   async createCustomer(customerData) {
     try {
@@ -667,26 +693,31 @@ class API {
       
       const cleanData = {
         name: customerData.name,
-        email: customerData.email || '',
-        phone: customerData.phone || '',
+        email: customerData.email || undefined,
+        phone: customerData.phone || undefined,
+        address: customerData.address || '',
         loyaltyPoints: customerData.loyaltyPoints || 0,
         totalSpent: customerData.totalSpent || 0,
+        totalPaid: customerData.totalPaid || 0,
+        totalOutstanding: customerData.totalOutstanding || 0,
         notes: customerData.notes || '',
-        storeId
+        tags: customerData.tags || [],
+        storeId: storeId
       };
       
       if (customerData.address) cleanData.address = customerData.address;
       if (customerData.joinDate) cleanData.joinDate = customerData.joinDate;
       if (customerData.lastVisit) cleanData.lastVisit = customerData.lastVisit;
+      if (customerData.birthDate) cleanData.birthDate = customerData.birthDate;
       
-      delete cleanData.id;
-      delete cleanData._id;
+      if (!cleanData.email) delete cleanData.email;
+      if (!cleanData.phone) delete cleanData.phone;
       
       console.log('📤 Sending clean customer data:', cleanData);
       
       const response = await this.client.post('/customers', cleanData);
-      console.log('✅ Customer created:', response.data._id);
-      return { success: true, customer: response.data };
+      console.log('✅ Customer created:', response.data.customer?._id || response.data._id);
+      return { success: true, customer: response.data.customer || response.data };
     } catch (error) {
       console.error('❌ Create customer error:', error.message);
       if (error.response) console.error('Server response:', error.response.data);
@@ -697,30 +728,44 @@ class API {
   async updateCustomer(id, customerData) {
     try {
       const storeId = this.getCurrentStoreId();
+      if (!storeId) {
+        console.error('❌ Cannot update customer: No store selected');
+        return { success: false, error: 'No store selected. Please select a store first.' };
+      }
+      
       console.log('📤 Updating customer:', id, 'for store:', storeId);
       
       const cleanData = {
         name: customerData.name,
-        email: customerData.email || '',
-        phone: customerData.phone || '',
-        loyaltyPoints: customerData.loyaltyPoints || 0,
-        totalSpent: customerData.totalSpent || 0,
-        notes: customerData.notes || '',
-        storeId
+        email: customerData.email || undefined,
+        phone: customerData.phone || undefined,
+        address: customerData.address,
+        loyaltyPoints: customerData.loyaltyPoints,
+        totalSpent: customerData.totalSpent,
+        totalPaid: customerData.totalPaid,
+        totalOutstanding: customerData.totalOutstanding,
+        notes: customerData.notes,
+        tags: customerData.tags,
+        storeId: storeId
       };
       
-      if (customerData.address) cleanData.address = customerData.address;
+      if (customerData.birthDate) cleanData.birthDate = customerData.birthDate;
       if (customerData.joinDate) cleanData.joinDate = customerData.joinDate;
       if (customerData.lastVisit) cleanData.lastVisit = customerData.lastVisit;
       
-      delete cleanData.id;
-      delete cleanData._id;
+      Object.keys(cleanData).forEach(key => 
+        cleanData[key] === undefined && delete cleanData[key]
+      );
+      
+      if (cleanData.email === '') delete cleanData.email;
+      if (cleanData.phone === '') delete cleanData.phone;
       
       const response = await this.client.put(`/customers/${id}`, cleanData);
       console.log('✅ Customer updated:', id);
-      return { success: true, customer: response.data };
+      return { success: true, customer: response.data.customer || response.data };
     } catch (error) {
       console.error('❌ Update customer error:', error.message);
+      if (error.response) console.error('Server response:', error.response.data);
       return { success: false, error: error.message };
     }
   }
@@ -728,8 +773,9 @@ class API {
   async deleteCustomer(id) {
     try {
       const storeId = this.getCurrentStoreId();
-      await this.client.delete(`/customers/${id}`, { params: { storeId } });
-      return { success: true };
+      console.log(`🗑️ Deleting customer: ${id} from store: ${storeId}`);
+      const response = await this.client.delete(`/customers/${id}`, { params: { storeId } });
+      return { success: true, message: response.data.message || 'Customer deleted successfully' };
     } catch (error) {
       console.error('❌ Delete customer error:', error.message);
       return { success: false, error: error.message };
@@ -739,8 +785,25 @@ class API {
   async getAllCustomers() {
     try {
       const storeId = this.getCurrentStoreId();
+      if (!storeId) {
+        console.warn('⚠️ No store selected, returning empty customers');
+        return { success: true, customers: [] };
+      }
+      
+      console.log(`📤 Fetching all customers for store: ${storeId}`);
       const response = await this.client.get('/customers', { params: { storeId } });
-      return { success: true, customers: response.data };
+      
+      let customers = [];
+      if (response.data.success && response.data.customers) {
+        customers = response.data.customers;
+      } else if (Array.isArray(response.data)) {
+        customers = response.data;
+      } else if (response.data.customers) {
+        customers = response.data.customers;
+      }
+      
+      console.log(`📦 Retrieved ${customers.length} customers for store ${storeId}`);
+      return { success: true, customers };
     } catch (error) {
       console.error('❌ Get customers error:', error.message);
       return { success: false, error: error.message, customers: [] };
@@ -750,9 +813,9 @@ class API {
   async getCustomer(id) {
     try {
       const storeId = this.getCurrentStoreId();
-      console.log(`🔍 Fetching customer by ID: ${id}`);
+      console.log(`🔍 Fetching customer by ID: ${id} for store: ${storeId}`);
       const response = await this.client.get(`/customers/${id}`, { params: { storeId } });
-      return { success: true, customer: response.data };
+      return { success: true, customer: response.data.customer || response.data };
     } catch (error) {
       if (error.response?.status === 404) {
         console.log('⚠️ Customer not found by ID');
@@ -766,9 +829,9 @@ class API {
   async getCustomerByEmail(email) {
     try {
       const storeId = this.getCurrentStoreId();
-      console.log(`🔍 Searching for customer by email: ${email}`);
+      console.log(`🔍 Searching for customer by email: ${email} in store: ${storeId}`);
       const response = await this.client.get(`/customers/email/${encodeURIComponent(email)}`, { params: { storeId } });
-      return { success: true, customer: response.data };
+      return { success: true, customer: response.data.customer || response.data };
     } catch (error) {
       if (error.response?.status === 404) {
         console.log('⚠️ No customer found with this email');
@@ -782,12 +845,19 @@ class API {
   async getCustomersByEmail(email) {
     try {
       const storeId = this.getCurrentStoreId();
-      console.log(`🔍 Searching for customers by email: ${email}`);
+      console.log(`🔍 Searching for customers by email: ${email} in store: ${storeId}`);
       const response = await this.client.get(`/customers/email/${encodeURIComponent(email)}`, { params: { storeId } });
-      return { success: true, customers: [response.data] };
+      
+      let customers = [];
+      if (response.data.customers) {
+        customers = response.data.customers;
+      } else if (response.data.customer) {
+        customers = [response.data.customer];
+      }
+      
+      return { success: true, customers };
     } catch (error) {
       if (error.response?.status === 404) {
-        console.log('⚠️ No customers found with this email');
         return { success: true, customers: [] };
       }
       console.error('❌ Get customers by email error:', error.message);
@@ -798,14 +868,84 @@ class API {
   async searchCustomers(query) {
     try {
       const storeId = this.getCurrentStoreId();
-      console.log(`🔍 Searching customers with query: ${query}`);
+      console.log(`🔍 Searching customers with query: "${query}" in store: ${storeId}`);
       const response = await this.client.get('/customers/search', {
         params: { q: query, storeId }
       });
-      return { success: true, customers: response.data };
+      
+      let customers = [];
+      if (response.data.success && response.data.customers) {
+        customers = response.data.customers;
+      } else if (Array.isArray(response.data)) {
+        customers = response.data;
+      } else if (response.data.customers) {
+        customers = response.data.customers;
+      }
+      
+      console.log(`📦 Found ${customers.length} customers matching "${query}"`);
+      return { success: true, customers };
     } catch (error) {
       console.error('❌ Search customers error:', error.message);
       return { success: false, error: error.message, customers: [] };
+    }
+  }
+
+  async getCustomerStats() {
+    try {
+      const storeId = this.getCurrentStoreId();
+      if (!storeId) {
+        return { success: true, stats: {} };
+      }
+      
+      console.log(`📊 Fetching customer stats for store: ${storeId}`);
+      const response = await this.client.get('/customers/stats', { params: { storeId } });
+      return { success: true, stats: response.data.stats || {} };
+    } catch (error) {
+      console.error('❌ Get customer stats error:', error.message);
+      return { success: false, error: error.message, stats: {} };
+    }
+  }
+
+  // ==================== STORE STATUS MANAGEMENT ====================
+
+  async toggleStoreStatus(storeId) {
+    try {
+      console.log(`🔄 Toggling store status: ${storeId}`);
+      const response = await this.client.patch(`/stores/${storeId}/toggle-status`);
+      
+      console.log('📦 Toggle response:', response.data);
+      
+      const isOpen = response.data.isOpen !== undefined 
+        ? response.data.isOpen 
+        : response.data.store?.open;
+      
+      console.log(`✅ Store status toggled: ${isOpen ? 'Open' : 'Closed'}`);
+      
+      return { 
+        success: true, 
+        store: response.data.store, 
+        isOpen: isOpen, 
+        message: response.data.message 
+      };
+    } catch (error) {
+      console.error('❌ Toggle store status error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async updateStoreHours(storeId, openTime, closeTime) {
+    try {
+      console.log(`📤 Updating store hours: ${storeId} - ${openTime} to ${closeTime}`);
+      const response = await this.client.put(`/stores/${storeId}/hours`, { openTime, closeTime });
+      console.log('✅ Store hours updated');
+      return { 
+        success: true, 
+        store: response.data.store, 
+        message: response.data.message 
+      };
+    } catch (error) {
+      console.error('❌ Update store hours error:', error.message);
+      return { success: false, error: error.message };
     }
   }
 
@@ -814,7 +954,7 @@ class API {
   async addStockHistory(productId, historyData) {
     try {
       const storeId = this.getCurrentStoreId();
-      console.log(`📝 Adding stock history for product: ${productId}`);
+      console.log(`📝 Adding stock history for product: ${productId} in store: ${storeId}`);
       const response = await this.client.post(`/products/${productId}/stock-history`, { ...historyData, storeId });
       return { success: true, history: response.data.history };
     } catch (error) {
@@ -876,8 +1016,25 @@ class API {
 
   async getAllStores() {
     try {
+      console.log('📤 Fetching stores for current user...');
       const response = await this.client.get('/stores');
-      return { success: true, stores: response.data };
+      
+      let stores = [];
+      if (response.data.success && Array.isArray(response.data.stores)) {
+        stores = response.data.stores;
+      } else if (Array.isArray(response.data)) {
+        stores = response.data;
+      } else if (response.data.stores && Array.isArray(response.data.stores)) {
+        stores = response.data.stores;
+      }
+      
+      console.log(`📦 Retrieved ${stores.length} stores for current user`);
+      
+      stores.forEach(store => {
+        console.log(`  - Store: ${store.name} (ID: ${store._id}, Open: ${store.open})`);
+      });
+      
+      return { success: true, stores };
     } catch (error) {
       console.error('❌ Get stores error:', error.message);
       return { success: false, error: error.message, stores: [] };
@@ -886,8 +1043,9 @@ class API {
 
   async getStore(id) {
     try {
+      console.log(`📤 Fetching store: ${id}`);
       const response = await this.client.get(`/stores/${id}`);
-      return { success: true, store: response.data };
+      return { success: true, store: response.data.store || response.data };
     } catch (error) {
       console.error('❌ Get store error:', error.message);
       return { success: false, error: error.message, store: null };
@@ -899,26 +1057,19 @@ class API {
       console.log('📤 Creating store:', storeData.name);
       const response = await this.client.post('/stores', storeData);
       
-      // Extract the MongoDB _id from response - try multiple paths
       const storeId = response.data._id || response.data.id || response.data.store?._id;
       
       console.log('✅ Store created successfully');
       console.log('📦 Store ID:', storeId);
-      console.log('📦 Full response:', JSON.stringify(response.data, null, 2));
-      
-      if (!storeId) {
-        console.error('⚠️ Warning: No _id returned from store creation');
-      }
       
       return { 
         success: true, 
-        store: response.data,
+        store: response.data.store || response.data,
         _id: storeId,
         id: storeId
       };
     } catch (error) {
       console.error('❌ Create store error:', error.message);
-      console.error('Response:', error.response?.data);
       return { success: false, error: error.message };
     }
   }
@@ -928,7 +1079,7 @@ class API {
       console.log('📤 Updating store:', id);
       const response = await this.client.put(`/stores/${id}`, storeData);
       console.log('✅ Store updated:', id);
-      return { success: true, store: response.data };
+      return { success: true, store: response.data.store || response.data };
     } catch (error) {
       console.error('❌ Update store error:', error.message);
       return { success: false, error: error.message };
@@ -937,6 +1088,7 @@ class API {
 
   async deleteStore(id) {
     try {
+      console.log('📤 Deleting store:', id);
       await this.client.delete(`/stores/${id}`);
       console.log('✅ Store deleted:', id);
       return { success: true };
@@ -948,6 +1100,7 @@ class API {
 
   async getDefaultStore() {
     try {
+      console.log('📤 Fetching default store for current user...');
       const response = await this.client.get('/stores/default');
       return { success: true, store: response.data.store || response.data };
     } catch (error) {
@@ -958,7 +1111,9 @@ class API {
 
   async setDefaultStore(id) {
     try {
+      console.log('📤 Setting default store:', id);
       const response = await this.client.put(`/stores/${id}/default`);
+      console.log('✅ Default store set:', id);
       return { success: true, store: response.data.store || response.data };
     } catch (error) {
       console.error('❌ Set default store error:', error.message);
@@ -966,37 +1121,121 @@ class API {
     }
   }
 
+  // ==================== STORE USER ASSIGNMENT ENDPOINTS ====================
+
+  async getStoreUsers(storeId) {
+    try {
+      console.log(`📤 Fetching users for store: ${storeId}`);
+      const response = await this.client.get(`/stores/${storeId}/users`);
+      return { success: true, users: response.data.users || [] };
+    } catch (error) {
+      console.error('❌ Get store users error:', error.message);
+      return { success: false, error: error.message, users: [] };
+    }
+  }
+
+  async assignUserToStore(storeId, userId) {
+    try {
+      console.log(`📤 Assigning user ${userId} to store ${storeId}`);
+      const response = await this.client.post(`/stores/${storeId}/users/${userId}`);
+      console.log('✅ User assigned to store');
+      return { success: true, store: response.data.store, message: response.data.message };
+    } catch (error) {
+      console.error('❌ Assign user to store error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async removeUserFromStore(storeId, userId) {
+    try {
+      console.log(`📤 Removing user ${userId} from store ${storeId}`);
+      const response = await this.client.delete(`/stores/${storeId}/users/${userId}`);
+      console.log('✅ User removed from store');
+      return { success: true, store: response.data.store, message: response.data.message };
+    } catch (error) {
+      console.error('❌ Remove user from store error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getAllUsersForAssignment() {
+    try {
+      console.log('📤 Fetching all users for assignment...');
+      const response = await this.client.get('/stores/users/all');
+      return { success: true, users: response.data.users || [] };
+    } catch (error) {
+      console.error('❌ Get all users for assignment error:', error.message);
+      return { success: false, error: error.message, users: [] };
+    }
+  }
+
+  async getUserStores(userId) {
+    try {
+      console.log(`📤 Fetching stores for user: ${userId}`);
+      const response = await this.client.get(`/stores/user/${userId}/stores`);
+      return { success: true, stores: response.data.stores || [] };
+    } catch (error) {
+      console.error('❌ Get user stores error:', error.message);
+      return { success: false, error: error.message, stores: [] };
+    }
+  }
+
   // ==================== TRANSFER ENDPOINTS ====================
 
   async createTransfer(transferData) {
     try {
-      const storeId = this.getCurrentStoreId();
-      console.log('📤 Creating transfer:', transferData.product, 'from store:', transferData.fromStore);
-      const response = await this.client.post('/stores/transfers', { ...transferData, storeId });
+      console.log('📤 Creating transfer:', transferData.product);
+      const response = await this.client.post('/stores/transfers', transferData);
       console.log('✅ Transfer created:', response.data._id);
-      return { success: true, transfer: response.data };
+      return { success: true, transfer: response.data.transfer || response.data };
     } catch (error) {
       console.error('❌ Create transfer error:', error.message);
       return { success: false, error: error.message };
     }
   }
 
-  async getAllTransfers() {
+  async getAllTransfers(storeId = null) {
     try {
-      const storeId = this.getCurrentStoreId();
-      const response = await this.client.get('/stores/transfers', { params: { storeId } });
-      return { success: true, transfers: response.data };
+      let url = '/stores/transfers';
+      if (storeId) {
+        url += `?storeId=${storeId}`;
+      }
+      console.log(`📤 Fetching transfers from: ${url}`);
+      const response = await this.client.get(url);
+      
+      let transfers = [];
+      if (response.data.success && response.data.transfers) {
+        transfers = response.data.transfers;
+      } else if (Array.isArray(response.data)) {
+        transfers = response.data;
+      } else if (response.data.transfers) {
+        transfers = response.data.transfers;
+      }
+      
+      console.log(`📦 Retrieved ${transfers.length} transfers`);
+      return { success: true, transfers };
     } catch (error) {
       console.error('❌ Get transfers error:', error.message);
-      return { success: false, error: error.message, transfers: [] };
+      return { success: true, transfers: [] };
+    }
+  }
+
+  async getTransfersByStore(storeId) {
+    try {
+      console.log(`📤 Fetching transfers for store: ${storeId}`);
+      const response = await this.client.get(`/stores/transfers/store/${storeId}`);
+      return { success: true, transfers: response.data.transfers || [] };
+    } catch (error) {
+      console.error('❌ Get transfers by store error:', error.message);
+      return { success: true, transfers: [] };
     }
   }
 
   async getTransfer(id) {
     try {
-      const storeId = this.getCurrentStoreId();
-      const response = await this.client.get(`/stores/transfers/${id}`, { params: { storeId } });
-      return { success: true, transfer: response.data };
+      console.log(`📤 Fetching transfer: ${id}`);
+      const response = await this.client.get(`/stores/transfers/${id}`);
+      return { success: true, transfer: response.data.transfer || response.data };
     } catch (error) {
       console.error('❌ Get transfer error:', error.message);
       return { success: false, error: error.message, transfer: null };
@@ -1005,11 +1244,10 @@ class API {
 
   async approveTransfer(id) {
     try {
-      const storeId = this.getCurrentStoreId();
       console.log('📤 Approving transfer:', id);
-      const response = await this.client.put(`/stores/transfers/${id}/approve`, {}, { params: { storeId } });
+      const response = await this.client.put(`/stores/transfers/${id}/approve`);
       console.log('✅ Transfer approved:', id);
-      return { success: true, transfer: response.data };
+      return { success: true, transfer: response.data.transfer || response.data };
     } catch (error) {
       console.error('❌ Approve transfer error:', error.message);
       return { success: false, error: error.message };
@@ -1018,11 +1256,10 @@ class API {
 
   async completeTransfer(id) {
     try {
-      const storeId = this.getCurrentStoreId();
       console.log('📤 Completing transfer:', id);
-      const response = await this.client.put(`/stores/transfers/${id}/complete`, {}, { params: { storeId } });
+      const response = await this.client.put(`/stores/transfers/${id}/complete`);
       console.log('✅ Transfer completed:', id);
-      return { success: true, transfer: response.data };
+      return { success: true, transfer: response.data.transfer || response.data };
     } catch (error) {
       console.error('❌ Complete transfer error:', error.message);
       return { success: false, error: error.message };
@@ -1031,11 +1268,10 @@ class API {
 
   async cancelTransfer(id) {
     try {
-      const storeId = this.getCurrentStoreId();
       console.log('📤 Cancelling transfer:', id);
-      const response = await this.client.put(`/stores/transfers/${id}/cancel`, {}, { params: { storeId } });
+      const response = await this.client.put(`/stores/transfers/${id}/cancel`);
       console.log('✅ Transfer cancelled:', id);
-      return { success: true, transfer: response.data };
+      return { success: true, transfer: response.data.transfer || response.data };
     } catch (error) {
       console.error('❌ Cancel transfer error:', error.message);
       return { success: false, error: error.message };
@@ -1044,8 +1280,8 @@ class API {
 
   async deleteTransfer(id) {
     try {
-      const storeId = this.getCurrentStoreId();
-      await this.client.delete(`/stores/transfers/${id}`, { params: { storeId } });
+      console.log('📤 Deleting transfer:', id);
+      await this.client.delete(`/stores/transfers/${id}`);
       console.log('✅ Transfer deleted:', id);
       return { success: true };
     } catch (error) {
