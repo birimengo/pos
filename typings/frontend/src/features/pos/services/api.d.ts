@@ -24,103 +24,121 @@ declare interface paramsType {
 
 	changePassword(currentPassword: any, newPassword: any): Promise<any>;
 
-	getAllUsers(): Promise<any>;
+	getAllUsers(): Promise<{	}>;
 
-	getUser(id: any): Promise<any>;
+	getUser(id: any): Promise<{	}>;
 
-	createUser(userData: any): Promise<any>;
+	createUser(userData: any): Promise<{	}>;
 
-	updateUser(id: any, userData: any): Promise<any>;
+	updateUser(id: any, userData: any): Promise<{	}>;
 
-	deleteUser(id: any): Promise<any>;
+	deleteUser(id: any): Promise<{	}>;
 
 	uploadImageToCloudinary(file: any, folder: any, pos: any, products: any, retryCount: number): Promise<any>;
 
-	createProduct(productData: any): Promise<any>;
+	createProduct(productData: any): Promise<{	}>;
 
-	updateProduct(id: any, productData: any): Promise<any>;
+	updateProduct(id: any, productData: any): Promise<{	}>;
 
-	deleteProduct(id: any): Promise<any>;
+	deleteProduct(id: any): Promise<{	}>;
 
-	getAllProducts(): Promise<any>;
+	getAllProducts(): Promise<null | {	}>;
 
-	getProduct(id: any): Promise<any>;
+	getProduct(id: any): Promise<{	}>;
 
-	getProductsByCategory(category: any): Promise<any>;
+	getProductsByCategory(category: any): Promise<{	}>;
 
-	createTransaction(transactionData: any): Promise<any>;
+	createTransaction(transactionData: any): Promise<{	}>;
 
 	syncTransaction(transactionData: any): Promise<any>;
 
-	getAllTransactions(params: any): Promise<any>;
+	getAllTransactions(params: any): Promise<null | {	}>;
 
-	getTransaction(id: any): Promise<any>;
+	getTransaction(id: any): Promise<{	}>;
 
-	getTransactionByReceipt(receiptNumber: any): Promise<any>;
+	getTransactionByReceipt(receiptNumber: any): Promise<{	}>;
 
-	updateTransaction(id: any, transactionData: any): Promise<any>;
+	updateTransaction(id: any, transactionData: any): Promise<{	}>;
 
-	deleteTransaction(transactionId: any): Promise<any>;
+	deleteTransaction(transactionId: any): Promise<{	}>;
 
-	getTransactionsByDateRange(startDate: any, endDate: any): Promise<any>;
+	getTransactionsByDateRange(startDate: any, endDate: any): Promise<{	}>;
 
-	getTransactionsByCustomer(customerId: any): Promise<any>;
+	getTransactionsByCustomer(customerId: any): Promise<{	}>;
 
-	getDailySales(date: any): Promise<any>;
+	getDailySales(date: any): Promise<{	}>;
 
-	getSalesSummary(startDate: any, endDate: any): Promise<any>;
+	getSalesSummary(startDate: any, endDate: any): Promise<{	}>;
 
-	createCustomer(customerData: any): Promise<any>;
+	createCustomer(customerData: any): Promise<{	}>;
 
-	updateCustomer(id: any, customerData: any): Promise<any>;
+	updateCustomer(id: any, customerData: any): Promise<{	}>;
 
-	deleteCustomer(id: any): Promise<any>;
+	deleteCustomer(id: any): Promise<{	}>;
 
-	getAllCustomers(): Promise<any>;
+	getAllCustomers(): Promise<null | {	}>;
 
-	getCustomer(id: any): Promise<any>;
+	getCustomer(id: any): Promise<{	}>;
 
-	getCustomerByEmail(email: any): Promise<any>;
+	getCustomerByEmail(email: any): Promise<{	}>;
 
-	getCustomersByEmail(email: any): Promise<any>;
+	getCustomersByEmail(email: any): Promise<{	}>;
 
-	searchCustomers(query: any): Promise<any>;
+	searchCustomers(query: any): Promise<{	}>;
 
-	addStockHistory(productId: any, historyData: any): Promise<any>;
+	getCustomerStats(): Promise<{	}>;
 
-	getStockHistory(productId: any, params: any): Promise<any>;
+	toggleStoreStatus(storeId: any): Promise<null | {	}>;
 
-	getSyncData(since: any): Promise<any>;
+	updateStoreHours(storeId: any, openTime: any, closeTime: any): Promise<null | {	}>;
 
-	syncAll(data: any): Promise<any>;
+	addStockHistory(productId: any, historyData: any): Promise<{	}>;
+
+	getStockHistory(productId: any, params: any): Promise<{	}>;
+
+	getSyncData(since: any): Promise<{	}>;
+
+	syncAll(data: any): Promise<{	}>;
 
 	checkConnection(): Promise<any>;
 
-	getAllStores(): Promise<any>;
+	getAllStores(): Promise<{	}>;
 
-	getStore(id: any): Promise<any>;
+	getStore(id: any): Promise<{	}>;
 
-	createStore(storeData: any): Promise<any>;
+	createStore(storeData: any): Promise<null | {	}>;
 
-	updateStore(id: any, storeData: any): Promise<any>;
+	updateStore(id: any, storeData: any): Promise<{	}>;
 
-	deleteStore(id: any): Promise<any>;
+	deleteStore(id: any): Promise<{	}>;
 
-	getDefaultStore(): Promise<any>;
+	getDefaultStore(): Promise<{	}>;
 
-	setDefaultStore(id: any): Promise<any>;
+	setDefaultStore(id: any): Promise<{	}>;
 
-	createTransfer(transferData: any): Promise<any>;
+	getStoreUsers(storeId: any): Promise<{	}>;
 
-	getAllTransfers(): Promise<any>;
+	assignUserToStore(storeId: any, userId: any): Promise<{	}>;
 
-	getTransfer(id: any): Promise<any>;
+	removeUserFromStore(storeId: any, userId: any): Promise<{	}>;
 
-	approveTransfer(id: any): Promise<any>;
+	getAllUsersForAssignment(): Promise<{	}>;
 
-	completeTransfer(id: any): Promise<any>;
+	getUserStores(userId: any): Promise<{	}>;
 
-	cancelTransfer(id: any): Promise<any>;
+	createTransfer(transferData: any): Promise<{	}>;
 
-	deleteTransfer(id: any): Promise<any>;
+	getAllTransfers(storeId: any): Promise<{	}>;
+
+	getTransfersByStore(storeId: any): Promise<{	}>;
+
+	getTransfer(id: any): Promise<{	}>;
+
+	approveTransfer(id: any): Promise<{	}>;
+
+	completeTransfer(id: any): Promise<{	}>;
+
+	cancelTransfer(id: any): Promise<{	}>;
+
+	deleteTransfer(id: any): Promise<{	}>;
 }

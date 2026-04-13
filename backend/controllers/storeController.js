@@ -5,6 +5,7 @@ import Product from '../models/Product.js';
 import Transaction from '../models/Transaction.js';
 import Customer from '../models/Customer.js';
 import Transfer from '../models/Transfer.js';
+import User from '../models/User.js';
 
 // Helper function to validate MongoDB ObjectId
 const isValidObjectId = (id) => {
@@ -29,24 +30,32 @@ const formatStoreResponse = (store) => ({
   timezone: store.timezone,
   settings: store.settings,
   active: store.active,
+  open: store.open !== undefined ? store.open : true,
   isDefault: store.isDefault,
   createdAt: store.createdAt,
   updatedAt: store.updatedAt,
   createdBy: store.createdBy,
   createdByName: store.createdByName,
   updatedBy: store.updatedBy,
-  updatedByName: store.updatedByName
+  updatedByName: store.updatedByName,
+  users: store.users || []
 });
 
-// ==================== CREATE STORE ====================
+// ==================== CREATE STORE (ADMIN ONLY) ====================
 
 export const createStore = async (req, res) => {
   try {
-    console.log('📤 Create store request received');
-    console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
-    console.log('👤 User:', req.user ? { id: req.user.id, email: req.user.email, name: req.user.name } : 'No user');
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can create stores'
+      });
+    }
 
-    // Validate required fields
+    console.log('📤 Create store request received');
+    console.log('👤 Admin user:', req.user.email);
+    console.log('👤 User ID:', req.user.id);
+
     if (!req.body.name || req.body.name.trim() === '') {
       return res.status(400).json({
         success: false,
@@ -67,95 +76,88 @@ export const createStore = async (req, res) => {
       openTime: req.body.openTime || '09:00',
       closeTime: req.body.closeTime || '21:00',
       timezone: req.body.timezone || 'UTC',
+      open: req.body.open !== undefined ? req.body.open : true,
       settings: {
         receiptHeader: req.body.settings?.receiptHeader || '',
         receiptFooter: req.body.settings?.receiptFooter || '',
         currency: req.body.settings?.currency || 'USD'
       },
       active: req.body.active !== false,
-      isDefault: req.body.isDefault || false,
-      createdBy: req.user?.id,
-      createdByName: req.user?.name,
-      users: [req.user?.id]  // Add current user to store's users array
+      isDefault: false,
+      createdBy: req.user.id,
+      createdByName: req.user.name,
+      users: [req.user.id]
     };
 
-    // If this is the first store for this user, make it default
-    const userStoreCount = await Store.countDocuments({
-      $or: [
-        { createdBy: req.user?.id },
-        { users: req.user?.id }
-      ]
+    console.log('📋 Store data to save:', {
+      name: storeData.name,
+      open: storeData.open,
+      createdBy: storeData.createdBy,
+      isDefault: storeData.isDefault
     });
-    
-    if (userStoreCount === 0) {
-      storeData.isDefault = true;
-      console.log('📌 This is the first store for this user, setting as default');
-    }
 
     const store = new Store(storeData);
     await store.save();
 
-    console.log('✅ Store created successfully:', {
+    // If this is the user's first store, make it default
+    const userStoreCount = await Store.countDocuments({
+      createdBy: req.user.id
+    });
+
+    if (userStoreCount === 1) {
+      store.isDefault = true;
+      await store.save();
+      console.log(`📌 Set ${store.name} as default store for user`);
+    }
+
+    console.log('✅ Store created successfully by admin:', {
       id: store._id,
       name: store.name,
-      isDefault: store.isDefault,
+      open: store.open,
       createdBy: store.createdBy,
-      users: store.users
+      isDefault: store.isDefault
     });
 
     res.status(201).json({
       success: true,
-      store: formatStoreResponse(store)
+      store: formatStoreResponse(store),
+      message: 'Store created successfully'
     });
   } catch (error) {
     console.error('❌ Create store error:', error);
     res.status(400).json({
       success: false,
-      error: error.message,
-      details: error.errors
+      error: error.message
     });
   }
 };
 
-// ==================== GET ALL STORES (FILTERED BY CURRENT USER) ====================
+// ==================== GET ALL STORES (USER SPECIFIC) ====================
 
 export const getAllStores = async (req, res) => {
   try {
     const userId = req.user?.id;
-    const userRole = req.user?.role;
+    const userEmail = req.user?.email;
     
-    console.log(`📦 Fetching stores for user ${req.user?.email} (role: ${userRole})`);
+    console.log(`📦 Fetching stores for user: ${userEmail} (ID: ${userId})`);
     
-    let query = {};
+    // ONLY stores created by this user
+    const query = { createdBy: userId };
     
-    // Admin users can see all stores they created OR are assigned to
-    if (userRole === 'admin') {
-      query = {
-        $or: [
-          { createdBy: userId },           // Stores they created
-          { users: userId }                // Stores they're assigned to
-        ]
-      };
-    } 
-    // Non-admin users (manager, cashier, inventory_manager) can only see stores they're assigned to
-    else {
-      query = {
-        $or: [
-          { users: userId },               // Stores they're assigned to
-          { createdBy: userId }            // Stores they created (if any)
-        ]
-      };
-    }
-    
-    console.log('Query:', JSON.stringify(query));
+    console.log('Query filter:', JSON.stringify(query));
     
     const stores = await Store.find(query).sort({ createdAt: -1 });
     
-    console.log(`📦 Retrieved ${stores.length} stores for user`);
+    console.log(`📦 Retrieved ${stores.length} stores for user ${userEmail}`);
+    
+    stores.forEach(store => {
+      console.log(`  - Store: ${store.name} (ID: ${store._id}, Created by: ${store.createdBy}, Open: ${store.open})`);
+    });
     
     res.json({
       success: true,
-      stores: stores.map(store => formatStoreResponse(store))
+      stores: stores.map(store => formatStoreResponse(store)),
+      userId
     });
   } catch (error) {
     console.error('❌ Get stores error:', error);
@@ -163,36 +165,30 @@ export const getAllStores = async (req, res) => {
   }
 };
 
-// ==================== GET STORE BY ID (WITH USER CHECK) ====================
+// ==================== GET STORE BY ID ====================
 
 export const getStoreById = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
     
-    // Validate ObjectId format
     if (!isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid store ID format. Expected a valid MongoDB ObjectId.'
+        error: 'Invalid store ID format'
       });
     }
     
-    // Find store that belongs to this user
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
+    const store = await Store.findOne({ _id: id, createdBy: userId });
     
     if (!store) {
       return res.status(404).json({
         success: false,
-        error: 'Store not found or you do not have access to this store'
+        error: 'Store not found or you do not have access'
       });
     }
+    
+    console.log(`📋 Store found: ${store.name} (Open: ${store.open})`);
     
     res.json({
       success: true,
@@ -204,34 +200,32 @@ export const getStoreById = async (req, res) => {
   }
 };
 
-// ==================== UPDATE STORE (WITH USER CHECK) ====================
+// ==================== UPDATE STORE ====================
 
 export const updateStore = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
     
-    // Validate ObjectId format
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
         success: false,
-        error: 'Invalid store ID format. Expected a valid MongoDB ObjectId.'
+        error: 'Only administrators can update stores'
       });
     }
     
-    // Find store that belongs to this user
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
     
+    const store = await Store.findOne({ _id: id, createdBy: userId });
     if (!store) {
       return res.status(404).json({
         success: false,
-        error: 'Store not found or you do not have permission to edit this store'
+        error: 'Store not found or you do not have permission to edit it'
       });
     }
 
@@ -248,6 +242,7 @@ export const updateStore = async (req, res) => {
       openTime: req.body.openTime || store.openTime,
       closeTime: req.body.closeTime || store.closeTime,
       timezone: req.body.timezone || store.timezone,
+      open: req.body.open !== undefined ? req.body.open : store.open,
       settings: {
         receiptHeader: req.body.settings?.receiptHeader || store.settings?.receiptHeader || '',
         receiptFooter: req.body.settings?.receiptFooter || store.settings?.receiptFooter || '',
@@ -260,27 +255,22 @@ export const updateStore = async (req, res) => {
       updatedAt: Date.now()
     };
 
-    // Handle default store changes
     if (updateData.isDefault && !store.isDefault) {
       await Store.updateMany(
-        { _id: { $ne: store._id }, isDefault: true, $or: [{ createdBy: userId }, { users: userId }] },
+        { _id: { $ne: store._id }, isDefault: true, createdBy: userId },
         { $set: { isDefault: false } }
       );
-      console.log(`📌 Setting ${store.name} as the new default store for user`);
     }
 
     Object.assign(store, updateData);
     await store.save();
 
-    console.log('✅ Store updated:', {
-      id: store._id,
-      name: store.name,
-      isDefault: store.isDefault
-    });
+    console.log(`✅ Store updated: ${store.name} (Open: ${store.open})`);
 
     res.json({
       success: true,
-      store: formatStoreResponse(store)
+      store: formatStoreResponse(store),
+      message: 'Store updated successfully'
     });
   } catch (error) {
     console.error('❌ Update store error:', error);
@@ -288,38 +278,35 @@ export const updateStore = async (req, res) => {
   }
 };
 
-// ==================== DELETE STORE (WITH USER CHECK) ====================
+// ==================== DELETE STORE ====================
 
 export const deleteStore = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user?.id;
     
-    // Validate ObjectId format
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can delete stores'
+      });
+    }
+    
     if (!isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid store ID format. Expected a valid MongoDB ObjectId.'
+        error: 'Invalid store ID format'
       });
     }
     
-    // Find store that belongs to this user
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
     if (!store) {
       return res.status(404).json({
         success: false,
-        error: 'Store not found or you do not have permission to delete this store'
+        error: 'Store not found or you do not have permission to delete it'
       });
     }
 
-    // Check for dependent data
     const [productCount, transactionCount, customerCount] = await Promise.all([
       Product.countDocuments({ storeId: store._id }),
       Transaction.countDocuments({ storeId: store._id }),
@@ -334,29 +321,7 @@ export const deleteStore = async (req, res) => {
       });
     }
 
-    // Prevent deletion of the only default store for this user
-    if (store.isDefault) {
-      const userDefaultStoreCount = await Store.countDocuments({ 
-        isDefault: true,
-        $or: [
-          { createdBy: userId },
-          { users: userId }
-        ]
-      });
-      if (userDefaultStoreCount === 1) {
-        return res.status(400).json({
-          success: false,
-          error: 'Cannot delete your only default store. Please set another store as default first.'
-        });
-      }
-    }
-
     await Store.findByIdAndDelete(id);
-
-    console.log('🗑️ Store deleted:', {
-      id: store._id,
-      name: store.name
-    });
 
     res.json({
       success: true,
@@ -364,6 +329,401 @@ export const deleteStore = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Delete store error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== TOGGLE STORE OPEN/CLOSE STATUS ====================
+
+export const toggleStoreStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    
+    console.log(`🔄 Toggling store status for ID: ${id}`);
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
+    
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found or you do not have access'
+      });
+    }
+    
+    console.log(`📋 Current store status: ${store.name} is ${store.open ? 'OPEN' : 'CLOSED'}`);
+    
+    store.open = !store.open;
+    store.updatedBy = userId;
+    store.updatedByName = req.user?.name;
+    store.updatedAt = new Date();
+    
+    await store.save();
+    
+    const statusText = store.open ? 'OPEN' : 'CLOSED';
+    console.log(`✅ Store ${store.name} is now ${statusText} by ${req.user?.email}`);
+    
+    const updatedStore = formatStoreResponse(store);
+    
+    res.json({
+      success: true,
+      store: updatedStore,
+      message: `Store is now ${store.open ? 'open' : 'closed'}`,
+      isOpen: store.open
+    });
+  } catch (error) {
+    console.error('❌ Toggle store status error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== UPDATE STORE HOURS ====================
+
+export const updateStoreHours = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { openTime, closeTime } = req.body;
+    const userId = req.user?.id;
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
+    
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found or you do not have access'
+      });
+    }
+    
+    if (openTime) store.openTime = openTime;
+    if (closeTime) store.closeTime = closeTime;
+    store.updatedBy = userId;
+    store.updatedByName = req.user?.name;
+    store.updatedAt = new Date();
+    
+    await store.save();
+    
+    console.log(`✅ Store ${store.name} hours updated: ${store.openTime} - ${store.closeTime}`);
+    
+    res.json({
+      success: true,
+      store: formatStoreResponse(store),
+      message: 'Store hours updated successfully'
+    });
+  } catch (error) {
+    console.error('❌ Update store hours error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== ASSIGN USER TO STORE ====================
+
+export const assignUserToStore = async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const currentUserId = req.user?.id;
+    
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can assign users to stores'
+      });
+    }
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: currentUserId });
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found or you do not have permission'
+      });
+    }
+    
+    const userToAssign = await User.findById(userId);
+    if (!userToAssign) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+    
+    if (!store.users) {
+      store.users = [];
+    }
+    
+    if (store.users.includes(userId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'User is already assigned to this store'
+      });
+    }
+    
+    store.users.push(userId);
+    await store.save();
+    
+    console.log(`✅ Admin ${req.user.email} assigned user ${userToAssign.email} to store ${store.name}`);
+    
+    res.json({
+      success: true,
+      message: `User ${userToAssign.name} assigned to store ${store.name} successfully`,
+      store: formatStoreResponse(store)
+    });
+  } catch (error) {
+    console.error('❌ Assign user to store error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== REMOVE USER FROM STORE ====================
+
+export const removeUserFromStore = async (req, res) => {
+  try {
+    const { id, userId } = req.params;
+    const currentUserId = req.user?.id;
+    
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can remove users from stores'
+      });
+    }
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: currentUserId });
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found or you do not have permission'
+      });
+    }
+    
+    if (!store.users || !store.users.includes(userId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'User is not assigned to this store'
+      });
+    }
+    
+    store.users = store.users.filter(uid => uid.toString() !== userId);
+    await store.save();
+    
+    const user = await User.findById(userId);
+    
+    console.log(`✅ Admin ${req.user.email} removed user ${user?.email} from store ${store.name}`);
+    
+    res.json({
+      success: true,
+      message: `User ${user?.name || userId} removed from store ${store.name} successfully`,
+      store: formatStoreResponse(store)
+    });
+  } catch (error) {
+    console.error('❌ Remove user from store error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== GET STORE USERS ====================
+
+export const getStoreUsers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
+    
+    if (!store) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have access to this store'
+      });
+    }
+    
+    const users = await User.find(
+      { _id: { $in: store.users || [] } },
+      '-password'
+    );
+    
+    res.json({
+      success: true,
+      users,
+      storeName: store.name,
+      totalUsers: users.length
+    });
+  } catch (error) {
+    console.error('❌ Get store users error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== GET ALL USERS FOR ASSIGNMENT ====================
+
+export const getAllUsersForAssignment = async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can view all users'
+      });
+    }
+    
+    const users = await User.find({}, '-password').sort({ createdAt: -1 });
+    
+    res.json({
+      success: true,
+      users: users.map(user => ({
+        _id: user._id,
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isActive: user.isActive
+      }))
+    });
+  } catch (error) {
+    console.error('❌ Get all users error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== GET USER STORES ====================
+
+export const getUserStores = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const requestingUserRole = req.user?.role;
+    
+    if (requestingUserRole !== 'admin' && req.user?.id !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: 'You can only view your own stores'
+      });
+    }
+    
+    const stores = await Store.find({ createdBy: userId }).sort({ name: 1 });
+    
+    res.json({
+      success: true,
+      stores: stores.map(store => formatStoreResponse(store))
+    });
+  } catch (error) {
+    console.error('❌ Get user stores error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== GET DEFAULT STORE ====================
+
+export const getDefaultStore = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    
+    console.log(`🔍 Finding default store for user: ${req.user?.email} (ID: ${userId})`);
+    
+    let defaultStore = await Store.findOne({ 
+      isDefault: true,
+      createdBy: userId
+    });
+    
+    if (!defaultStore) {
+      defaultStore = await Store.findOne({ createdBy: userId });
+      
+      if (defaultStore) {
+        defaultStore.isDefault = true;
+        await defaultStore.save();
+        console.log(`📌 Set ${defaultStore.name} as default store for user ${req.user?.email}`);
+      }
+    }
+    
+    if (!defaultStore) {
+      console.log(`⚠️ No stores found for user ${req.user?.email}`);
+      return res.status(404).json({
+        success: false,
+        error: 'No stores found for this user. Please create a store first.'
+      });
+    }
+    
+    console.log(`✅ Default store for ${req.user?.email}: ${defaultStore.name} (Open: ${defaultStore.open})`);
+    
+    res.json({
+      success: true,
+      store: formatStoreResponse(defaultStore)
+    });
+  } catch (error) {
+    console.error('❌ Get default store error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== SET DEFAULT STORE ====================
+
+export const setDefaultStore = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
+    
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found or you do not have access'
+      });
+    }
+    
+    await Store.updateMany(
+      { isDefault: true, createdBy: userId },
+      { $set: { isDefault: false } }
+    );
+    
+    store.isDefault = true;
+    await store.save();
+    
+    res.json({
+      success: true,
+      message: 'Default store updated successfully',
+      store: formatStoreResponse(store)
+    });
+  } catch (error) {
+    console.error('❌ Set default store error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -382,15 +742,7 @@ export const getStoreStats = async (req, res) => {
       });
     }
     
-    // Verify user has access to this store
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
     if (!store) {
       return res.status(403).json({
         success: false,
@@ -442,15 +794,7 @@ export const getStoreInventory = async (req, res) => {
       });
     }
     
-    // Verify user has access to this store
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
     if (!store) {
       return res.status(403).json({
         success: false,
@@ -499,15 +843,7 @@ export const getStoreSales = async (req, res) => {
       });
     }
     
-    // Verify user has access to this store
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
     if (!store) {
       return res.status(403).json({
         success: false,
@@ -554,251 +890,6 @@ export const getStoreSales = async (req, res) => {
   }
 };
 
-// ==================== GET DEFAULT STORE FOR CURRENT USER ====================
-
-export const getDefaultStore = async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    const userRole = req.user?.role;
-    
-    console.log(`🔍 Finding default store for user ${req.user?.email}`);
-    
-    // First try to find a store marked as default that belongs to this user
-    let defaultStore = await Store.findOne({ 
-      isDefault: true,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
-    // If no default store, get any store belonging to this user
-    if (!defaultStore) {
-      defaultStore = await Store.findOne({
-        $or: [
-          { createdBy: userId },
-          { users: userId }
-        ]
-      });
-      
-      if (defaultStore) {
-        // Set as default if it's the only store for this user
-        defaultStore.isDefault = true;
-        await defaultStore.save();
-        console.log(`📌 Set ${defaultStore.name} as default store for user ${req.user?.email}`);
-      }
-    }
-    
-    if (!defaultStore) {
-      return res.status(404).json({
-        success: false,
-        error: 'No stores found for this user. Please create a store first.'
-      });
-    }
-    
-    res.json({
-      success: true,
-      store: formatStoreResponse(defaultStore)
-    });
-  } catch (error) {
-    console.error('❌ Get default store error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-// ==================== SET DEFAULT STORE ====================
-
-export const setDefaultStore = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user?.id;
-    
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid store ID format'
-      });
-    }
-    
-    // Verify user has access to this store
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
-    if (!store) {
-      return res.status(404).json({
-        success: false,
-        error: 'Store not found or you do not have access'
-      });
-    }
-    
-    // Remove default flag from all stores belonging to this user
-    await Store.updateMany(
-      { 
-        isDefault: true,
-        $or: [
-          { createdBy: userId },
-          { users: userId }
-        ]
-      },
-      { $set: { isDefault: false } }
-    );
-    
-    // Set new default store
-    store.isDefault = true;
-    await store.save();
-    
-    console.log(`✅ Store ${store.name} set as default for user ${req.user?.email}`);
-    
-    res.json({
-      success: true,
-      message: 'Default store updated successfully',
-      store: formatStoreResponse(store)
-    });
-  } catch (error) {
-    console.error('❌ Set default store error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-// ==================== STORE USER ASSIGNMENT ====================
-
-export const assignUserToStore = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { userId } = req.body;
-    const currentUserId = req.user?.id;
-    
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid store ID format'
-      });
-    }
-    
-    // Verify current user has permission to assign users to this store
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: currentUserId },
-        { users: currentUserId }
-      ]
-    });
-    
-    if (!store) {
-      return res.status(403).json({
-        success: false,
-        error: 'You do not have permission to assign users to this store'
-      });
-    }
-    
-    if (!store.users) {
-      store.users = [];
-    }
-    
-    if (!store.users.includes(userId)) {
-      store.users.push(userId);
-      await store.save();
-      console.log(`✅ User ${userId} assigned to store ${store.name} by ${req.user?.email}`);
-    }
-    
-    res.json({
-      success: true,
-      message: 'User assigned to store successfully'
-    });
-  } catch (error) {
-    console.error('❌ Assign user to store error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-export const removeUserFromStore = async (req, res) => {
-  try {
-    const { id, userId } = req.params;
-    const currentUserId = req.user?.id;
-    
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid store ID format'
-      });
-    }
-    
-    // Verify current user has permission
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: currentUserId },
-        { users: currentUserId }
-      ]
-    });
-    
-    if (!store) {
-      return res.status(403).json({
-        success: false,
-        error: 'You do not have permission to remove users from this store'
-      });
-    }
-    
-    if (store.users) {
-      store.users = store.users.filter(uid => String(uid) !== userId);
-      await store.save();
-      console.log(`✅ User ${userId} removed from store ${store.name} by ${req.user?.email}`);
-    }
-    
-    res.json({
-      success: true,
-      message: 'User removed from store successfully'
-    });
-  } catch (error) {
-    console.error('❌ Remove user from store error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-export const getStoreUsers = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user?.id;
-    
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid store ID format'
-      });
-    }
-    
-    // Verify user has access to this store
-    const store = await Store.findOne({
-      _id: id,
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
-    if (!store) {
-      return res.status(403).json({
-        success: false,
-        error: 'You do not have access to this store'
-      });
-    }
-    
-    const storeWithUsers = await Store.findById(id).populate('users', '-password');
-    res.json({
-      success: true,
-      users: storeWithUsers?.users || []
-    });
-  } catch (error) {
-    console.error('❌ Get store users error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
 // ==================== TRANSFER FUNCTIONS ====================
 
 export const createTransfer = async (req, res) => {
@@ -834,21 +925,60 @@ export const createTransfer = async (req, res) => {
 
 export const getAllTransfers = async (req, res) => {
   try {
-    const transfers = await Transfer.find().sort({ createdAt: -1 });
-    res.json({ success: true, transfers });
+    const { storeId } = req.query;
+    let query = {};
+    
+    if (storeId) {
+      query = {
+        $or: [
+          { fromStoreId: storeId },
+          { toStoreId: storeId }
+        ]
+      };
+    }
+    
+    const transfers = await Transfer.find(query).sort({ createdAt: -1 });
+    
+    res.json({ 
+      success: true, 
+      transfers,
+      count: transfers.length,
+      filtered: !!storeId
+    });
   } catch (error) {
     console.error('❌ Get transfers error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(200).json({ 
+      success: true, 
+      transfers: [],
+      count: 0,
+      error: error.message 
+    });
   }
 };
 
 export const getTransfersByStore = async (req, res) => {
   try {
     const { storeId } = req.params;
+    
+    if (!storeId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Store ID is required'
+      });
+    }
+    
     const transfers = await Transfer.find({
-      $or: [{ fromStoreId: storeId }, { toStoreId: storeId }]
+      $or: [
+        { fromStoreId: storeId },
+        { toStoreId: storeId }
+      ]
     }).sort({ createdAt: -1 });
-    res.json({ success: true, transfers });
+    
+    res.json({ 
+      success: true, 
+      transfers,
+      count: transfers.length
+    });
   } catch (error) {
     console.error('❌ Get transfers by store error:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -896,7 +1026,6 @@ export const completeTransfer = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Transfer not found' });
     }
 
-    // Update product stock for both stores
     const product = await Product.findById(transfer.productId);
     if (product) {
       if (!product.storeStock) product.storeStock = {};
@@ -963,6 +1092,13 @@ export const bulkCreateStores = async (req, res) => {
     const { stores } = req.body;
     const userId = req.user?.id;
     
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can bulk create stores'
+      });
+    }
+    
     if (!stores || !Array.isArray(stores) || stores.length === 0) {
       return res.status(400).json({
         success: false,
@@ -976,13 +1112,13 @@ export const bulkCreateStores = async (req, res) => {
         ...storeData,
         createdBy: userId,
         createdByName: req.user?.name,
-        users: [userId]  // Add current user to store
+        users: [userId],
+        open: storeData.open !== undefined ? storeData.open : true,
+        isDefault: false
       });
       await store.save();
       createdStores.push(store);
     }
-    
-    console.log(`✅ Bulk created ${createdStores.length} stores for user ${req.user?.email}`);
     
     res.status(201).json({
       success: true,
@@ -1000,6 +1136,13 @@ export const bulkUpdateStatus = async (req, res) => {
     const { storeIds, active } = req.body;
     const userId = req.user?.id;
     
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can bulk update store status'
+      });
+    }
+    
     if (!storeIds || !Array.isArray(storeIds) || storeIds.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1008,13 +1151,7 @@ export const bulkUpdateStatus = async (req, res) => {
     }
     
     const result = await Store.updateMany(
-      { 
-        _id: { $in: storeIds },
-        $or: [
-          { createdBy: userId },
-          { users: userId }
-        ]
-      },
+      { _id: { $in: storeIds }, createdBy: userId },
       {
         $set: {
           active,
@@ -1024,8 +1161,6 @@ export const bulkUpdateStatus = async (req, res) => {
         }
       }
     );
-    
-    console.log(`✅ Bulk updated ${result.modifiedCount} stores status to ${active} for user ${req.user?.email}`);
     
     res.json({
       success: true,
@@ -1042,6 +1177,13 @@ export const bulkDeleteStores = async (req, res) => {
     const { storeIds } = req.body;
     const userId = req.user?.id;
     
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only administrators can bulk delete stores'
+      });
+    }
+    
     if (!storeIds || !Array.isArray(storeIds) || storeIds.length === 0) {
       return res.status(400).json({
         success: false,
@@ -1049,22 +1191,10 @@ export const bulkDeleteStores = async (req, res) => {
       });
     }
     
-    // Get stores that belong to this user
-    const userStores = await Store.find({
-      _id: { $in: storeIds },
-      $or: [
-        { createdBy: userId },
-        { users: userId }
-      ]
-    });
-    
-    const userStoreIds = userStores.map(s => s._id.toString());
-    
-    // Check for dependent data
     let hasData = false;
     const storesWithData = [];
     
-    for (const storeId of userStoreIds) {
+    for (const storeId of storeIds) {
       const [productCount, transactionCount] = await Promise.all([
         Product.countDocuments({ storeId }),
         Transaction.countDocuments({ storeId })
@@ -1084,9 +1214,7 @@ export const bulkDeleteStores = async (req, res) => {
       });
     }
     
-    const result = await Store.deleteMany({ _id: { $in: userStoreIds } });
-    
-    console.log(`✅ Bulk deleted ${result.deletedCount} stores for user ${req.user?.email}`);
+    const result = await Store.deleteMany({ _id: { $in: storeIds }, createdBy: userId });
     
     res.json({
       success: true,
