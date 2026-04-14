@@ -16,6 +16,7 @@ const initialState = {
   error: null,
   lastLoadTime: null,
   currentStoreId: null,
+  currentStoreMongoId: null,
   initialLoadComplete: false
 };
 
@@ -29,7 +30,11 @@ function inventoryReducer(state, action) {
         lastLoadTime: new Date().toISOString()
       };
     case 'SET_CURRENT_STORE':
-      return { ...state, currentStoreId: action.payload };
+      return { 
+        ...state, 
+        currentStoreId: action.payload.id,
+        currentStoreMongoId: action.payload.mongoId
+      };
     case 'ADD_PRODUCT':
       return { 
         ...state, 
@@ -87,6 +92,22 @@ function inventoryReducer(state, action) {
   }
 }
 
+// Helper to get store's MongoDB ID for proper isolation
+const getStoreMongoId = (store) => {
+  if (!store) return null;
+  return store._id || store.cloudId || store.id;
+};
+
+// Helper to check if product belongs to current store
+const productBelongsToStore = (product, storeMongoId, storeId) => {
+  const productStoreId = String(product.storeId || product.storeMongoId || '');
+  const targetStoreId = String(storeMongoId || storeId || '');
+  
+  return productStoreId === targetStoreId ||
+         productStoreId === String(storeId) ||
+         product.storeId === storeMongoId;
+};
+
 export function InventoryProvider({ children }) {
   const [state, dispatch] = useReducer(inventoryReducer, initialState);
   const { activeStore, loading: storeLoading } = useStore();
@@ -95,56 +116,81 @@ export function InventoryProvider({ children }) {
   const loadProducts = useCallback(async () => {
     // Don't try to load if no store is selected
     if (!activeStore) {
-      console.log('⏳ Waiting for active store...');
+      console.log('⏳ Inventory: Waiting for active store...');
       dispatch({ type: 'SET_LOADING', payload: false });
       dispatch({ type: 'CLEAR_PRODUCTS' });
+      dispatch({ type: 'SET_CURRENT_STORE', payload: { id: null, mongoId: null } });
       return;
     }
     
+    // Get store identifiers for isolation
+    const storeMongoId = getStoreMongoId(activeStore);
+    const storeLocalId = activeStore.id;
+    
     // Don't reload if already loaded for this store and not forced
-    if (state.currentStoreId === activeStore.id && state.initialLoadComplete && state.products.length > 0) {
-      console.log(`📦 Using cached products for store: ${activeStore.name}`);
+    if (state.currentStoreId === storeLocalId && 
+        state.currentStoreMongoId === storeMongoId && 
+        state.initialLoadComplete && 
+        state.products.length >= 0) {
+      console.log(`📦 Inventory: Using cached products for store: ${activeStore.name} (${storeMongoId?.slice(-6)})`);
       return;
     }
     
     try {
-      console.log(`🔄 Loading products for store: ${activeStore.name} (${activeStore.id})`);
+      console.log(`🔄 Inventory: Loading products for store: ${activeStore.name}`);
+      console.log(`   Store Local ID: ${storeLocalId}`);
+      console.log(`   Store MongoDB ID: ${storeMongoId?.slice(-6) || 'N/A'}`);
+      
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'SET_ERROR', payload: null });
-      dispatch({ type: 'SET_CURRENT_STORE', payload: activeStore.id });
+      dispatch({ type: 'SET_CURRENT_STORE', payload: { id: storeLocalId, mongoId: storeMongoId } });
       
       await db.ensureInitialized();
       
-      // Get all products and filter by storeId
+      // Get all products from database
       const allProducts = await db.getAll('products');
-      const storeProducts = allProducts.filter(p => {
-        // Match by storeId (could be ObjectId string or local ID)
-        const productStoreId = String(p.storeId || '');
-        const activeStoreId = String(activeStore.id);
-        const activeStoreCloudId = String(activeStore._id || activeStore.cloudId || '');
+      console.log(`📦 Inventory: Total products in DB: ${allProducts.length}`);
+      
+      // CRITICAL: Filter products that belong to the current store only
+      const storeProducts = allProducts.filter(product => {
+        // Skip products without storeId
+        if (!product.storeId && !product.storeMongoId) {
+          console.debug(`⚠️ Product ${product.name} has no store ID, skipping`);
+          return false;
+        }
         
-        return productStoreId === activeStoreId || 
-               productStoreId === activeStoreCloudId ||
-               (p.storeId === activeStore._id) ||
-               (p.storeId === activeStore.cloudId);
+        const productStoreId = String(product.storeId || product.storeMongoId || '');
+        
+        // Check against both local and MongoDB IDs
+        const matchesLocalId = productStoreId === String(storeLocalId);
+        const matchesMongoId = storeMongoId ? productStoreId === String(storeMongoId) : false;
+        const matchesCloudId = activeStore.cloudId ? productStoreId === String(activeStore.cloudId) : false;
+        
+        return matchesLocalId || matchesMongoId || matchesCloudId;
       });
       
-      console.log(`📦 Retrieved ${storeProducts.length} products for store ${activeStore.name}`);
+      console.log(`📦 Inventory: Retrieved ${storeProducts.length} products for store ${activeStore.name}`);
       
       if (storeProducts && storeProducts.length > 0) {
         dispatch({ type: 'SET_PRODUCTS', payload: storeProducts });
         
-        // Extract unique categories
+        // Extract unique categories from filtered products
         const uniqueCategories = [...new Set(storeProducts.map(p => p.category).filter(Boolean))];
         if (uniqueCategories.length > 0) {
           dispatch({ type: 'SET_CATEGORIES', payload: uniqueCategories });
+          console.log(`📦 Inventory: Found ${uniqueCategories.length} categories`);
         } else {
           dispatch({ type: 'SET_CATEGORIES', payload: [] });
         }
         
-        console.log(`✅ Loaded ${storeProducts.length} products into state for store ${activeStore.name}`);
+        console.log(`✅ Inventory: Loaded ${storeProducts.length} products into state for store ${activeStore.name}`);
+        
+        // Log sample product for debugging
+        if (storeProducts.length > 0) {
+          console.log(`   Sample product: ${storeProducts[0].name} (Store ID: ${storeProducts[0].storeId})`);
+        }
       } else {
-        console.log(`📭 No products found for store ${activeStore.name}`);
+        console.log(`📭 Inventory: No products found for store ${activeStore.name}`);
         dispatch({ type: 'SET_PRODUCTS', payload: [] });
         dispatch({ type: 'SET_CATEGORIES', payload: [] });
       }
@@ -152,19 +198,19 @@ export function InventoryProvider({ children }) {
       dispatch({ type: 'SET_INITIAL_LOAD_COMPLETE', payload: true });
       
     } catch (error) {
-      console.error('❌ Failed to load products from IndexedDB:', error);
+      console.error('❌ Inventory: Failed to load products from IndexedDB:', error);
       dispatch({ type: 'SET_ERROR', payload: error.message });
       dispatch({ type: 'SET_PRODUCTS', payload: [] });
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  }, [activeStore, state.currentStoreId, state.initialLoadComplete, state.products.length]);
+  }, [activeStore, state.currentStoreId, state.currentStoreMongoId, state.initialLoadComplete]);
 
   // Load products when store changes or becomes available
   useEffect(() => {
     // Wait for store to be ready
     if (storeLoading) {
-      console.log('⏳ Store context still loading...');
+      console.log('⏳ Inventory: Store context still loading...');
       return;
     }
     
@@ -173,8 +219,9 @@ export function InventoryProvider({ children }) {
     
     // Set up store change listener
     const handleStoreSwitch = (event) => {
-      console.log('🔄 Store switched, reloading inventory...');
+      console.log('🔄 Inventory: Store switched, reloading inventory...', event?.detail);
       dispatch({ type: 'SET_INITIAL_LOAD_COMPLETE', payload: false });
+      dispatch({ type: 'CLEAR_PRODUCTS' });
       loadProducts();
     };
     
@@ -187,15 +234,16 @@ export function InventoryProvider({ children }) {
 
   // Debug: Log state changes
   useEffect(() => {
-    if (state.currentStoreId && !state.isLoading) {
-      console.log(`📊 Inventory state: ${state.products.length} products for store ${state.currentStoreId}`);
+    if (state.currentStoreId && !state.isLoading && state.initialLoadComplete) {
+      console.log(`📊 Inventory: ${state.products.length} products for store ${state.currentStoreId?.slice(-6)}`);
     }
-  }, [state.products.length, state.currentStoreId, state.isLoading]);
+  }, [state.products.length, state.currentStoreId, state.isLoading, state.initialLoadComplete]);
 
   // Method to manually refresh inventory
   const refreshInventory = useCallback(async () => {
-    console.log('🔄 Manually refreshing inventory...');
+    console.log('🔄 Inventory: Manually refreshing inventory...');
     dispatch({ type: 'SET_INITIAL_LOAD_COMPLETE', payload: false });
+    dispatch({ type: 'CLEAR_PRODUCTS' });
     await loadProducts();
   }, [loadProducts]);
 
@@ -209,18 +257,29 @@ export function InventoryProvider({ children }) {
     return state.products.filter(p => p.stock <= 0);
   }, [state.products]);
 
-  // Method to get product by ID
+  // Method to get product by ID (with store isolation check)
   const getProductById = useCallback((id) => {
-    return state.products.find(p => p.id === id || p._id === id);
-  }, [state.products]);
+    const product = state.products.find(p => p.id === id || p._id === id);
+    
+    // Additional safety: verify product belongs to current store
+    if (product && activeStore) {
+      const storeMongoId = getStoreMongoId(activeStore);
+      if (!productBelongsToStore(product, storeMongoId, activeStore.id)) {
+        console.warn(`⚠️ Inventory: Product ${id} belongs to different store, access denied`);
+        return null;
+      }
+    }
+    
+    return product;
+  }, [state.products, activeStore]);
 
-  // Method to get products by category
+  // Method to get products by category (already filtered by store)
   const getProductsByCategory = useCallback((category) => {
     if (category === 'All') return state.products;
     return state.products.filter(p => p.category === category);
   }, [state.products]);
 
-  // Method to search products
+  // Method to search products (already filtered by store)
   const searchProducts = useCallback((searchTerm) => {
     if (!searchTerm) return state.products;
     const term = searchTerm.toLowerCase();
@@ -231,6 +290,23 @@ export function InventoryProvider({ children }) {
     );
   }, [state.products]);
 
+  // Get store statistics
+  const getStoreStats = useCallback(() => {
+    const totalProducts = state.products.length;
+    const totalValue = state.products.reduce((sum, p) => sum + ((p.cost || 0) * p.stock), 0);
+    const lowStockCount = state.products.filter(p => p.stock <= state.lowStockThreshold).length;
+    const outOfStockCount = state.products.filter(p => p.stock <= 0).length;
+    const categoriesCount = new Set(state.products.map(p => p.category).filter(Boolean)).size;
+    
+    return {
+      totalProducts,
+      totalValue,
+      lowStockCount,
+      outOfStockCount,
+      categoriesCount
+    };
+  }, [state.products, state.lowStockThreshold]);
+
   const value = {
     state,
     dispatch,
@@ -240,9 +316,12 @@ export function InventoryProvider({ children }) {
     getProductById,
     getProductsByCategory,
     searchProducts,
+    getStoreStats,
     hasProducts: state.products.length > 0,
     isLoading: state.isLoading || storeLoading,
-    isReady: !state.isLoading && !storeLoading && state.initialLoadComplete
+    isReady: !state.isLoading && !storeLoading && state.initialLoadComplete,
+    currentStoreId: state.currentStoreId,
+    currentStoreMongoId: state.currentStoreMongoId
   };
 
   return (

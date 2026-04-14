@@ -63,11 +63,13 @@ class ProductService {
       return { success: false, error: 'No store selected. Please select a store first.' };
     }
     
+    // Get the store's MongoDB ID for proper isolation
     let storeMongoId = currentStore._id || currentStore.cloudId;
     const isValidObjectId = storeMongoId && /^[0-9a-fA-F]{24}$/.test(storeMongoId);
     
     if (!storeMongoId || !isValidObjectId) {
       console.log('⚠️ Store has no valid MongoDB ID. Product will be synced later.');
+      console.log('Store object:', { _id: currentStore._id, cloudId: currentStore.cloudId, id: currentStore.id });
       return { 
         success: false, 
         error: 'Store not synced to cloud yet.',
@@ -75,6 +77,7 @@ class ProductService {
       };
     }
     
+    console.log(`✅ Store synced: ${currentStore.name} (ID: ${storeMongoId})`);
     return { success: true, storeMongoId, store: currentStore };
   }
 
@@ -82,6 +85,17 @@ class ProductService {
     const result = await this.ensureStoreSynced();
     if (!result.success) return null;
     return result.storeMongoId;
+  }
+
+  // Get the current user ID for ownership tracking
+  async getCurrentUserId() {
+    try {
+      const currentUser = await db.getCurrentUser();
+      return currentUser;
+    } catch (error) {
+      console.error('Failed to get current user:', error);
+      return null;
+    }
   }
 
   // ==================== CREATE ====================
@@ -94,6 +108,10 @@ class ProductService {
       
       const productId = productData.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const currentStoreId = db.getCurrentStore();
+      const currentUserId = await this.getCurrentUserId();
+      
+      // CRITICAL: Ensure storeId is properly set for isolation
+      const storeIdToUse = productData.storeId || productData.storeMongoId || currentStoreId;
       
       const product = {
         ...productData,
@@ -103,12 +121,21 @@ class ProductService {
         localMainImage: productData.localMainImage || null,
         cloudMainImage: productData.cloudMainImage || null,
         failedImages: productData.failedImages || [],
-        storeId: productData.storeId || currentStoreId,
+        storeId: storeIdToUse,
+        storeMongoId: storeIdToUse,
+        userId: productData.userId || currentUserId,
         synced: false,
         syncRequired: true,
         createdAt: productData.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
+
+      console.log('📦 Product store isolation:', {
+        productName: product.name,
+        storeId: product.storeId,
+        storeMongoId: product.storeMongoId,
+        userId: product.userId
+      });
 
       if (imageFile) {
         const validation = await this.validateImageFile(imageFile);
@@ -165,7 +192,16 @@ class ProductService {
   async getProductLocally(productId) {
     try {
       await db.ensureInitialized();
-      return await db.getProduct(productId) || null;
+      const product = await db.getProduct(productId);
+      
+      // Verify product belongs to current store
+      const currentStoreId = await this.getStoreMongoId();
+      if (product && currentStoreId && product.storeId !== currentStoreId) {
+        console.warn(`⚠️ Product ${productId} belongs to different store, access denied`);
+        return null;
+      }
+      
+      return product || null;
     } catch (error) {
       console.error('❌ Failed to get product locally:', error);
       return null;
@@ -175,9 +211,19 @@ class ProductService {
   async getAllProductsLocally() {
     try {
       await db.ensureInitialized();
-      const products = await db.getProducts();
-      console.log(`📦 Retrieved ${products.length} products from database`);
-      return products || [];
+      const allProducts = await db.getProducts();
+      const currentStoreId = await this.getStoreMongoId();
+      
+      // Filter products by current store for isolation
+      let filteredProducts = allProducts;
+      if (currentStoreId) {
+        filteredProducts = allProducts.filter(p => p.storeId === currentStoreId);
+        console.log(`📦 Retrieved ${filteredProducts.length} products for store ${currentStoreId} (${allProducts.length} total)`);
+      } else {
+        console.log(`📦 Retrieved ${allProducts.length} products from database (no store filter)`);
+      }
+      
+      return filteredProducts || [];
     } catch (error) {
       console.error('❌ Failed to get all products:', error);
       return [];
@@ -195,6 +241,12 @@ class ProductService {
       const existingProduct = await db.getProduct(productId);
       if (!existingProduct) {
         throw new Error(`Product ${productId} not found`);
+      }
+
+      // Verify product belongs to current store
+      const currentStoreId = await this.getStoreMongoId();
+      if (currentStoreId && existingProduct.storeId !== currentStoreId) {
+        throw new Error(`Cannot update product: belongs to different store`);
       }
 
       if (newImageFile) {
@@ -246,6 +298,12 @@ class ProductService {
       if (!product) {
         throw new Error(`Product ${productId} not found`);
       }
+
+      // Verify product belongs to current store
+      const currentStoreId = await this.getStoreMongoId();
+      if (currentStoreId && product.storeId !== currentStoreId) {
+        throw new Error(`Cannot update stock: product belongs to different store`);
+      }
       
       const oldStock = product.stock;
       product.stock = (product.stock || 0) + quantityChange;
@@ -255,7 +313,7 @@ class ProductService {
       
       await db.saveProduct(product);
       
-      console.log(`📦 Stock updated for ${product.name}: ${oldStock} → ${product.stock} (${quantityChange >= 0 ? '+' : ''}${quantityChange})`);
+      console.log(`📦 Stock updated for ${product.name}: ${oldStock} → ${product.stock} (${quantityChange >= 0 ? '+' : ''}${quantityChange}) for store ${product.storeId}`);
       
       await this.addToSyncQueue(product.id);
       
@@ -330,6 +388,13 @@ class ProductService {
       const product = await db.getProduct(productId);
       
       if (product) {
+        // Verify product belongs to current store
+        const currentStoreId = await this.getStoreMongoId();
+        if (currentStoreId && product.storeId !== currentStoreId) {
+          console.warn(`⚠️ Cannot delete product: belongs to different store`);
+          return { success: false, error: 'Product belongs to different store' };
+        }
+        
         if (product.localImages?.length > 0) {
           for (const localPath of product.localImages) {
             try {
@@ -444,6 +509,14 @@ class ProductService {
       }
 
       console.log(`☁️ Syncing product ${product.name} to cloud for store: ${storeMongoId}`);
+      console.log(`📦 Product storeId: ${product.storeId}, Target store: ${storeMongoId}`);
+
+      // Ensure product.storeId matches current store
+      if (product.storeId !== storeMongoId) {
+        console.warn(`⚠️ Product storeId mismatch! Updating from ${product.storeId} to ${storeMongoId}`);
+        product.storeId = storeMongoId;
+        await db.saveProduct(product);
+      }
 
       const cloudImages = [...(product.cloudImages || [])];
       const uploadedImages = [];
@@ -553,7 +626,7 @@ class ProductService {
         images: imageUrls,  // Array of URL strings (for simple image URLs)
         cloudinaryImages: cloudImages,  // Array of objects (for detailed Cloudinary data)
         cloudMainImage: cloudImages.find(img => img.isMain)?.url || cloudImages[0]?.url,
-        storeId: storeMongoId,
+        storeId: storeMongoId,  // CRITICAL: Use store's MongoDB ID for isolation
         updatedAt: new Date().toISOString()
       };
 
@@ -563,12 +636,13 @@ class ProductService {
       let mongoResult;
       let isNewProduct = false;
       
-      // FIRST: Try to find existing product by SKU
+      // FIRST: Try to find existing product by SKU within the same store
       try {
         console.log(`🔍 Checking if product exists in cloud by SKU: ${product.sku}`);
         const allProductsResult = await api.getAllProducts();
         if (allProductsResult.success && allProductsResult.products) {
-          const existingProduct = allProductsResult.products.find(p => p.sku === product.sku);
+          // Only find products from the same store
+          const existingProduct = allProductsResult.products.find(p => p.sku === product.sku && p.storeId === storeMongoId);
           if (existingProduct && existingProduct._id) {
             console.log(`✅ Found existing product in cloud by SKU: ${existingProduct._id}`);
             mongoResult = await api.updateProduct(existingProduct._id, productData);
@@ -583,7 +657,7 @@ class ProductService {
         try {
           console.log(`🔍 Checking if product exists in cloud by ID: ${product._id}`);
           const checkResult = await api.getProduct(product._id);
-          if (checkResult.success && checkResult.product) {
+          if (checkResult.success && checkResult.product && checkResult.product.storeId === storeMongoId) {
             console.log(`✅ Found existing product in cloud by ID: ${product._id}`);
             mongoResult = await api.updateProduct(product._id, productData);
           }
@@ -896,21 +970,30 @@ class ProductService {
       await db.ensureInitialized();
       
       const allProducts = await db.getProducts();
-      const syncedProducts = allProducts.filter(p => p.synced);
-      const pendingProducts = allProducts.filter(p => !p.synced);
+      const currentStoreId = await this.getStoreMongoId();
+      
+      // Only count products from current store
+      let storeProducts = allProducts;
+      if (currentStoreId) {
+        storeProducts = allProducts.filter(p => p.storeId === currentStoreId);
+      }
+      
+      const syncedProducts = storeProducts.filter(p => p.synced);
+      const pendingProducts = storeProducts.filter(p => !p.synced);
       const queue = await db.getSyncQueue();
       
-      const totalLocalImages = allProducts.reduce((sum, p) => sum + (p.localImages?.length || 0), 0);
-      const totalCloudImages = allProducts.reduce((sum, p) => sum + (p.cloudImages?.length || 0), 0);
+      const totalLocalImages = storeProducts.reduce((sum, p) => sum + (p.localImages?.length || 0), 0);
+      const totalCloudImages = storeProducts.reduce((sum, p) => sum + (p.cloudImages?.length || 0), 0);
       
       return {
-        totalProducts: allProducts.length,
+        totalProducts: storeProducts.length,
         syncedProducts: syncedProducts.length,
         pendingProducts: pendingProducts.length,
         queueLength: queue.length,
         totalLocalImages,
         totalCloudImages,
-        isOnline: navigator.onLine
+        isOnline: navigator.onLine,
+        currentStoreId
       };
     } catch (error) {
       console.error('Failed to get sync status:', error);
@@ -921,7 +1004,8 @@ class ProductService {
         queueLength: 0,
         totalLocalImages: 0,
         totalCloudImages: 0,
-        isOnline: navigator.onLine
+        isOnline: navigator.onLine,
+        currentStoreId: null
       };
     }
   }

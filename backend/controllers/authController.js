@@ -15,25 +15,28 @@ const generateToken = (userId, email, role) => {
   );
 };
 
-// Create default store for new user (especially admins)
+// Create default store for new user using their name and email
 const createDefaultStore = async (userId, userName, userEmail) => {
   try {
     console.log('🏪 Creating default store for user:', userName);
     
-    // Create default store with user assigned
+    // Clean store name from user's name (remove special chars, max 50 chars)
+    let storeName = `${userName.split('@')[0] || userName}'s Store`;
+    if (storeName.length > 50) storeName = storeName.substring(0, 47) + '...';
+    
     const defaultStore = new Store({
-      name: `${userName}'s Store`,
-      address: '123 Business Street',
-      city: 'Your City',
-      state: 'Your State',
-      zip: '12345',
-      phone: '+1 234 567 8900',
+      name: storeName,
+      address: '',
+      city: '',
+      state: '',
+      zip: '',
+      phone: '',
       email: userEmail,
       manager: userName,
       taxRate: 0,
       openTime: '09:00',
       closeTime: '21:00',
-      timezone: 'UTC',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       settings: {
         receiptHeader: 'Thank you for shopping!',
         receiptFooter: 'Returns accepted within 30 days',
@@ -43,13 +46,13 @@ const createDefaultStore = async (userId, userName, userEmail) => {
       isDefault: true,
       createdBy: userId,
       createdByName: userName,
-      users: [userId],  // Add user to store's users array
+      users: [userId],
       createdAt: new Date(),
       updatedAt: new Date()
     });
 
     await defaultStore.save();
-    console.log('✅ Default store created:', defaultStore._id);
+    console.log('✅ Default store created:', defaultStore._id, defaultStore.name);
 
     // Create default store settings
     const defaultSettings = new StoreSettings({
@@ -113,19 +116,12 @@ const createDefaultStore = async (userId, userName, userEmail) => {
   }
 };
 
-// Get user's stores (not just createdBy, but also assigned stores)
-const getUserStores = async (userId, userRole) => {
+// Get user's stores (only stores they created)
+const getUserStores = async (userId) => {
   try {
-    // For admin users, get stores they created OR are assigned to
-    // For non-admin users, only get stores they're assigned to
-    const query = {
-      $or: [
-        { users: userId },
-        ...(userRole === 'admin' ? [{ createdBy: userId }] : [])
-      ]
-    };
-    
-    const stores = await Store.find(query);
+    // Users can only see stores they created
+    const query = { createdBy: userId };
+    const stores = await Store.find(query).sort({ createdAt: -1 });
     return stores;
   } catch (error) {
     console.error('❌ Error getting user stores:', error);
@@ -133,33 +129,14 @@ const getUserStores = async (userId, userRole) => {
   }
 };
 
-// Get or create user's default store
-const getUserDefaultStore = async (userId, userName, userEmail, userRole) => {
+// Get user's default store
+const getUserDefaultStore = async (userId) => {
   try {
-    // Only create store for admin users
-    if (userRole !== 'admin') {
-      return null;
-    }
-
-    // Check if user already has a store (either created by them or assigned)
-    let userStore = await Store.findOne({
-      $or: [
-        { createdBy: userId },
-        { users: userId },
-        { isDefault: true }
-      ]
+    const defaultStore = await Store.findOne({ 
+      createdBy: userId,
+      isDefault: true 
     });
-    
-    if (!userStore) {
-      userStore = await createDefaultStore(userId, userName, userEmail);
-    } else if (!userStore.users.includes(userId)) {
-      // Add user to store's users array if not already there
-      userStore.users.push(userId);
-      await userStore.save();
-      console.log(`✅ User ${userId} added to store ${userStore.name}`);
-    }
-    
-    return userStore;
+    return defaultStore;
   } catch (error) {
     console.error('❌ Error getting user default store:', error);
     return null;
@@ -224,17 +201,14 @@ export const register = async (req, res) => {
     await user.save();
     console.log('✅ User created:', user.email);
 
-    // Create default store for admin users
-    let defaultStore = null;
-    if (role === 'admin') {
-      defaultStore = await createDefaultStore(user._id, name, email);
-    }
+    // Create default store for ALL users (each user gets their own store)
+    const defaultStore = await createDefaultStore(user._id, name, email);
 
     // Generate token
     const token = generateToken(user._id, user.email, user.role);
 
     // Get all stores for this user
-    const userStores = await getUserStores(user._id, user.role);
+    const userStores = await getUserStores(user._id);
 
     // Return user data with store info
     const userData = {
@@ -272,9 +246,7 @@ export const register = async (req, res) => {
       success: true,
       token,
       user: userData,
-      message: role === 'admin' 
-        ? 'Registration successful. Default store created. Please update your store details in Settings.'
-        : 'Registration successful'
+      message: 'Registration successful. Your store has been created.'
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -321,14 +293,11 @@ export const login = async (req, res) => {
       });
     }
 
-    // Get or create user's default store (for admin users)
-    let userDefaultStore = null;
-    if (user.role === 'admin') {
-      userDefaultStore = await getUserDefaultStore(user._id, user.name, user.email, user.role);
-    }
+    // Get user's default store
+    const userDefaultStore = await getUserDefaultStore(user._id);
 
     // Get all stores for this user
-    const userStores = await getUserStores(user._id, user.role);
+    const userStores = await getUserStores(user._id);
 
     user.lastLogin = new Date();
     await user.save();
@@ -395,21 +364,10 @@ export const getMe = async (req, res) => {
     }
 
     // Get user's default store
-    let userDefaultStore = null;
-    if (user.role === 'admin') {
-      userDefaultStore = await Store.findOne({
-        $or: [
-          { createdBy: user._id },
-          { users: user._id },
-          { isDefault: true }
-        ]
-      });
-    } else {
-      userDefaultStore = await Store.findOne({ users: user._id });
-    }
+    const userDefaultStore = await getUserDefaultStore(user._id);
 
     // Get all stores for this user
-    const userStores = await getUserStores(user._id, user.role);
+    const userStores = await getUserStores(user._id);
 
     const userData = {
       id: user._id,
@@ -658,14 +616,9 @@ export const getAllUsers = async (req, res) => {
 
     const users = await User.find({}).select('-password').sort({ createdAt: -1 });
     
-    // For each user, get their assigned stores
+    // For each user, get their stores
     const usersWithStores = await Promise.all(users.map(async (user) => {
-      const userStores = await Store.find({
-        $or: [
-          { createdBy: user._id },
-          { users: user._id }
-        ]
-      }).select('_id name isDefault');
+      const userStores = await Store.find({ createdBy: user._id }).select('_id name isDefault');
       
       return {
         ...user.toObject(),
@@ -705,13 +658,8 @@ export const getUserById = async (req, res) => {
       });
     }
 
-    // Get user's assigned stores
-    const userStores = await Store.find({
-      $or: [
-        { createdBy: user._id },
-        { users: user._id }
-      ]
-    }).select('_id name isDefault');
+    // Get user's stores
+    const userStores = await Store.find({ createdBy: user._id }).select('_id name isDefault');
 
     res.json({
       success: true,
@@ -787,7 +735,7 @@ export const createUser = async (req, res) => {
 
     await user.save();
 
-    // Assign user to specified stores
+    // Assign user to specified stores (if any)
     if (assignedStoreIds && assignedStoreIds.length > 0) {
       for (const storeId of assignedStoreIds) {
         const store = await Store.findById(storeId);
@@ -802,9 +750,20 @@ export const createUser = async (req, res) => {
       }
     }
 
-    // Create store for admin users
-    if (role === 'admin') {
-      await createDefaultStore(user._id, name, email);
+    // Create default store for the new user (every user gets their own store)
+    const defaultStore = await createDefaultStore(user._id, name, email);
+    
+    // If assignedStoreIds were provided, also add user to those stores
+    if (assignedStoreIds && assignedStoreIds.length > 0) {
+      for (const storeId of assignedStoreIds) {
+        const store = await Store.findById(storeId);
+        if (store && store._id.toString() !== defaultStore._id.toString()) {
+          if (!store.users.includes(user._id)) {
+            store.users.push(user._id);
+            await store.save();
+          }
+        }
+      }
     }
 
     const userData = {
@@ -820,7 +779,9 @@ export const createUser = async (req, res) => {
     res.status(201).json({
       success: true,
       user: userData,
-      message: role === 'admin' ? 'User created with default store' : 'User created successfully'
+      message: role === 'admin' 
+        ? 'User created with their own store. They can also access assigned stores.'
+        : 'User created with their own store.'
     });
   } catch (error) {
     console.error('Create user error:', error);
@@ -877,15 +838,19 @@ export const updateUser = async (req, res) => {
     await user.save();
 
     // Update store assignments
-    if (assignedStoreIds) {
-      // Remove user from all stores first
+    if (assignedStoreIds !== undefined) {
+      // Remove user from all stores they don't own (keep their own store)
+      const userOwnStore = await Store.findOne({ createdBy: user._id });
+      
       await Store.updateMany(
-        { users: user._id },
+        { users: user._id, _id: { $ne: userOwnStore?._id } },
         { $pull: { users: user._id } }
       );
       
-      // Add user to new stores
+      // Add user to new stores (excluding their own store)
       for (const storeId of assignedStoreIds) {
+        if (userOwnStore && storeId === userOwnStore._id.toString()) continue;
+        
         const store = await Store.findById(storeId);
         if (store) {
           if (!store.users) store.users = [];
@@ -947,7 +912,17 @@ export const deleteUser = async (req, res) => {
       });
     }
 
-    // Remove user from all stores
+    // Delete user's stores and their data
+    const userStores = await Store.find({ createdBy: user._id });
+    
+    for (const store of userStores) {
+      // Delete store settings
+      await StoreSettings.deleteMany({ storeId: store._id });
+      // Delete the store
+      await Store.findByIdAndDelete(store._id);
+    }
+    
+    // Remove user from any other stores
     await Store.updateMany(
       { users: user._id },
       { $pull: { users: user._id } }
@@ -957,7 +932,7 @@ export const deleteUser = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'User deleted successfully'
+      message: `User "${user.name}" and all associated stores deleted successfully`
     });
   } catch (error) {
     console.error('Delete user error:', error);
@@ -1083,6 +1058,14 @@ export const removeUserFromStore = async (req, res) => {
       return res.status(404).json({
         success: false,
         error: 'Store not found'
+      });
+    }
+    
+    // Don't remove user from their own store
+    if (store.createdBy && store.createdBy.toString() === userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot remove user from their own store'
       });
     }
     

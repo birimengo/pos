@@ -52,6 +52,13 @@ export default function ProductForm({ product, onClose, onSubmit }) {
     return formatPrice(amount, { showSymbol: true, showCode: false });
   };
 
+  // Get the store's MongoDB ID for proper isolation
+  const getStoreMongoId = () => {
+    if (!activeStore) return null;
+    // Priority: _id (MongoDB ObjectId) > cloudId > id
+    return activeStore._id || activeStore.cloudId || activeStore.id;
+  };
+
   // ===== STATE DECLARATIONS =====
   const [formData, setFormData] = useState({
     id: product?.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -70,8 +77,10 @@ export default function ProductForm({ product, onClose, onSubmit }) {
     cloudImages: product?.cloudImages || [],
     localMainImage: product?.localMainImage || null,
     cloudMainImage: product?.cloudMainImage || null,
-    storeId: product?.storeId || activeStore?.id,
+    storeId: product?.storeId || getStoreMongoId(),
+    storeMongoId: product?.storeMongoId || getStoreMongoId(),
     storeName: product?.storeName || activeStore?.name,
+    userId: product?.userId || null,
     synced: product?.synced || false,
     syncRequired: product?.syncRequired || true,
     createdAt: product?.createdAt || null,
@@ -112,6 +121,20 @@ export default function ProductForm({ product, onClose, onSubmit }) {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // Update storeId when activeStore changes
+  useEffect(() => {
+    if (activeStore) {
+      const storeMongoId = getStoreMongoId();
+      setFormData(prev => ({
+        ...prev,
+        storeId: storeMongoId,
+        storeMongoId: storeMongoId,
+        storeName: activeStore.name
+      }));
+      console.log('🔄 Updated form storeId to:', storeMongoId);
+    }
+  }, [activeStore]);
 
   // Initialize previews from existing images
   useEffect(() => {
@@ -512,23 +535,46 @@ export default function ProductForm({ product, onClose, onSubmit }) {
       return;
     }
 
+    // CRITICAL: Get the store's MongoDB ID for proper isolation
+    const storeMongoId = getStoreMongoId();
+    if (!storeMongoId) {
+      setSaveMessage('Store has no valid ID. Please ensure store is synced with cloud.');
+      setSaveMessageType('error');
+      return;
+    }
+
     setSaving(true);
     setSaveMessage('');
 
     try {
+      console.log('📝 Saving product for store:', {
+        storeName: activeStore.name,
+        storeId: storeMongoId,
+        productName: formData.name
+      });
+
       const finalFormData = {
         ...formData,
         price: parseFloat(formData.price),
         cost: parseFloat(formData.cost),
         stock: parseInt(formData.stock, 10),
         reorderPoint: parseInt(formData.reorderPoint, 10) || 5,
-        storeId: activeStore.id,
+        storeId: storeMongoId,  // CRITICAL: Use store's MongoDB ID
+        storeMongoId: storeMongoId,
         storeName: activeStore.name,
+        userId: activeStore.createdBy,  // Track which user owns this product
         uploadMethod,
         updatedAt: new Date().toISOString(),
         synced: false,
         syncRequired: true
       };
+
+      console.log('📤 Final product data with store isolation:', {
+        productName: finalFormData.name,
+        storeId: finalFormData.storeId,
+        storeName: finalFormData.storeName,
+        userId: finalFormData.userId
+      });
 
       const localResult = await productService.saveProductLocally(finalFormData);
       
@@ -594,6 +640,7 @@ export default function ProductForm({ product, onClose, onSubmit }) {
             {activeStore && (
               <p className={`text-xs ${currentTheme.colors.textMuted} mt-1`}>
                 Store: {activeStore.name} • {currency.code} ({getCurrencySymbol()})
+                <span className="ml-2 text-[10px] text-blue-500">Store ID: {getStoreMongoId()?.slice(-6)}</span>
               </p>
             )}
           </div>
@@ -1059,22 +1106,27 @@ export default function ProductForm({ product, onClose, onSubmit }) {
             />
           </div>
 
-          {/* Store Info (read-only) */}
+          {/* Store Info (read-only) - Enhanced with store isolation info */}
           {activeStore && (
             <div className={`p-3 rounded-lg ${currentTheme.colors.accentLight} border ${currentTheme.colors.border}`}>
               <div className="flex items-center gap-2">
                 <Icons.store className="text-sm text-blue-500" />
                 <div>
-                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Store Assignment</p>
+                  <p className={`text-xs ${currentTheme.colors.textSecondary}`}>Store Assignment (Isolated)</p>
                   <p className={`text-sm font-medium ${currentTheme.colors.text}`}>{activeStore.name}</p>
                   {activeStore.address && (
                     <p className={`text-[10px] ${currentTheme.colors.textMuted}`}>{activeStore.address}, {activeStore.city}</p>
                   )}
                 </div>
               </div>
-              <p className={`text-[10px] ${currentTheme.colors.textMuted} mt-2`}>
-                This product will be added to {activeStore.name}'s inventory only
-              </p>
+              <div className="mt-2 pt-2 border-t border-blue-200 dark:border-blue-800">
+                <p className={`text-[10px] ${currentTheme.colors.textMuted}`}>
+                  🔒 This product will be added to <strong>{activeStore.name}</strong>'s inventory only
+                </p>
+                <p className={`text-[9px] ${currentTheme.colors.textMuted} mt-1`}>
+                  Store ID: {getStoreMongoId()}
+                </p>
+              </div>
             </div>
           )}
 

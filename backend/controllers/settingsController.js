@@ -1,20 +1,383 @@
+// backend/controllers/settingsController.js - COMPLETE FIXED VERSION
+
 import StoreSettings from '../models/StoreSettings.js';
+import Store from '../models/Store.js';
 import User from '../models/User.js';
 import bcrypt from 'bcryptjs';
 
-// Get settings from database
-export const getSettings = async (req, res) => {
+// Helper to get settings with store context
+const getSettingsWithStoreContext = async (userId, storeId = null) => {
+  let query = {};
+  
+  if (storeId) {
+    query = { storeId: storeId };
+  } else {
+    query = { createdBy: userId, storeId: null };
+  }
+  
+  let settings = await StoreSettings.findOne(query);
+  
+  if (!settings && storeId) {
+    settings = await StoreSettings.findOne({ createdBy: userId, storeId: null });
+  }
+  
+  return settings;
+};
+
+// Helper to create default settings for a store
+const createDefaultSettingsForStore = async (storeId, userId, userName, storeData = {}) => {
   try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    const settings = new StoreSettings({
+      storeId: storeId,
+      store: {
+        name: storeData.name || 'My Store',
+        address: storeData.address || '',
+        phone: storeData.phone || '',
+        email: storeData.email || '',
+        taxRate: storeData.taxRate || 0,
+        country: 'US',
+        currency: 'USD'
+      },
+      receipt: {
+        header: 'THANK YOU FOR SHOPPING!',
+        footer: 'Returns accepted within 30 days',
+        showLogo: true,
+        showTax: true,
+        showDiscount: true,
+        showCustomerInfo: true,
+        showCashier: true,
+        paperSize: '80mm'
+      },
+      hardware: {
+        printer: 'USB',
+        cashDrawer: 'COM1',
+        barcodeScanner: 'USB',
+        customerDisplay: true,
+        scale: false
+      },
+      users: {
+        requireLogin: true,
+        sessionTimeout: 480,
+        maxFailedAttempts: 3
+      },
+      backup: {
+        autoBackup: true,
+        backupFrequency: 'daily',
+        backupTime: '23:00',
+        cloudBackup: false,
+        lastBackup: null
+      },
+      appearance: {
+        theme: 'light',
+        compactMode: false,
+        showProductImages: true,
+        defaultView: 'grid'
+      },
+      createdBy: userId,
+      createdByName: userName,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    await settings.save();
+    console.log('✅ Default store settings created for store:', storeId);
+    return settings;
+  } catch (error) {
+    console.error('❌ Error creating default store settings:', error);
+    return null;
+  }
+};
+
+// Helper to create default settings for user (legacy)
+const createDefaultSettingsForUser = async (userId, userName) => {
+  try {
+    const settings = new StoreSettings({
+      storeId: null,
+      createdBy: userId,
+      createdByName: userName,
+      store: {
+        name: `${userName.split('@')[0] || userName}'s Store`,
+        address: '',
+        phone: '',
+        email: '',
+        taxRate: 0,
+        country: 'US',
+        currency: 'USD'
+      },
+      receipt: {
+        header: 'THANK YOU FOR SHOPPING!',
+        footer: 'Returns accepted within 30 days',
+        showLogo: true,
+        showTax: true,
+        showDiscount: true,
+        showCustomerInfo: true,
+        showCashier: true,
+        paperSize: '80mm'
+      },
+      hardware: {
+        printer: 'USB',
+        cashDrawer: 'COM1',
+        barcodeScanner: 'USB',
+        customerDisplay: true,
+        scale: false
+      },
+      users: {
+        requireLogin: true,
+        sessionTimeout: 480,
+        maxFailedAttempts: 3
+      },
+      backup: {
+        autoBackup: true,
+        backupFrequency: 'daily',
+        backupTime: '23:00',
+        cloudBackup: false,
+        lastBackup: null
+      },
+      appearance: {
+        theme: 'light',
+        compactMode: false,
+        showProductImages: true,
+        defaultView: 'grid'
+      },
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    await settings.save();
+    console.log('✅ Default user settings created for user:', userId);
+    return settings;
+  } catch (error) {
+    console.error('❌ Error creating default user settings:', error);
+    return null;
+  }
+};
+
+// ==================== STORE SETTINGS (Store-Specific) - FIXED ====================
+
+// Get store settings only (store-specific)
+export const getStoreSettings = async (req, res) => {
+  try {
+    // SAFE: Check if req exists and has query/body properties
+    let storeId = null;
+    
+    if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    } else if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    }
+    
+    console.log('📝 getStoreSettings - storeId:', storeId);
+    console.log('📝 getStoreSettings - user:', req?.user?.id, req?.user?.email);
+    
+    // If no storeId provided, try to get user's default store or any store
+    if (!storeId) {
+      console.log('📝 No storeId provided, looking for user stores...');
+      
+      // Find all stores belonging to this user
+      const userStores = await Store.find({ createdBy: req.user.id });
+      
+      if (userStores && userStores.length > 0) {
+        // Use the first store (or default if marked)
+        const storeToUse = userStores.find(s => s.isDefault) || userStores[0];
+        console.log('📝 Using store:', storeToUse?.name, storeToUse?._id);
+        
+        if (storeToUse) {
+          let settings = await StoreSettings.findOne({ storeId: storeToUse._id });
+          
+          if (!settings) {
+            settings = await createDefaultSettingsForStore(storeToUse._id, req.user.id, req.user.name, storeToUse);
+          }
+          
+          return res.json({
+            success: true,
+            settings: settings?.store || {
+              name: storeToUse.name,
+              address: storeToUse.address || '',
+              phone: storeToUse.phone || '',
+              email: storeToUse.email || '',
+              taxRate: storeToUse.taxRate || 0,
+              country: 'US',
+              currency: 'USD'
+            }
+          });
+        }
+      }
+      
+      // No stores found - return default settings
+      console.log('📝 No stores found for user, returning default settings');
+      
+      return res.json({
+        success: true,
+        settings: {
+          name: `${req.user?.name?.split('@')[0] || 'My'}'s Store`,
+          address: '',
+          phone: '',
+          email: req.user?.email || '',
+          taxRate: 0,
+          country: 'US',
+          currency: 'USD'
+        }
+      });
+    }
+    
+    // Verify user owns this store
+    const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+    
+    if (!store) {
+      console.log('📝 Store not found or access denied:', storeId);
+      return res.status(404).json({
+        success: false,
+        error: 'Store not found'
+      });
+    }
+    
+    console.log('📝 Found store:', store.name, store._id);
+    
+    let settings = await StoreSettings.findOne({ storeId: storeId });
     
     if (!settings) {
-      // Create default settings for this user
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name,
-        createdAt: new Date()
+      settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+    }
+    
+    res.json({
+      success: true,
+      settings: settings?.store || {
+        name: store.name,
+        address: store.address || '',
+        phone: store.phone || '',
+        email: store.email || '',
+        taxRate: store.taxRate || 0,
+        country: 'US',
+        currency: 'USD'
+      }
+    });
+  } catch (error) {
+    console.error('Get store settings error:', error);
+    // Return a default response instead of 500 error
+    res.status(200).json({
+      success: true,
+      settings: {
+        name: `${req?.user?.name?.split('@')[0] || 'My'}'s Store`,
+        address: '',
+        phone: '',
+        email: req?.user?.email || '',
+        taxRate: 0,
+        country: 'US',
+        currency: 'USD'
+      }
+    });
+  }
+};
+
+// Update store settings (store-specific)
+export const updateStoreSettings = async (req, res) => {
+  try {
+    // SAFE: Check if req exists and has query/body properties
+    let storeId = null;
+    
+    if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    } else if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    }
+    
+    if (!storeId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Store ID is required for updating store settings'
       });
-      await settings.save();
+    }
+    
+    // Verify user owns this store
+    const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+    if (!store) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have permission to update settings for this store'
+      });
+    }
+    
+    let settings = await StoreSettings.findOne({ storeId: storeId });
+    
+    if (!settings) {
+      settings = new StoreSettings({
+        storeId: storeId,
+        createdBy: req.user.id,
+        createdByName: req.user.name
+      });
+    }
+    
+    // Update store settings
+    if (req.body.name) {
+      settings.store.name = req.body.name;
+      store.name = req.body.name;
+    }
+    if (req.body.address !== undefined) {
+      settings.store.address = req.body.address;
+      store.address = req.body.address;
+    }
+    if (req.body.phone !== undefined) {
+      settings.store.phone = req.body.phone;
+      store.phone = req.body.phone;
+    }
+    if (req.body.email !== undefined) {
+      settings.store.email = req.body.email;
+      store.email = req.body.email;
+    }
+    if (req.body.taxRate !== undefined) {
+      settings.store.taxRate = parseFloat(req.body.taxRate);
+      store.taxRate = parseFloat(req.body.taxRate);
+    }
+    if (req.body.country !== undefined) settings.store.country = req.body.country;
+    if (req.body.currency !== undefined) settings.store.currency = req.body.currency;
+    
+    settings.updatedBy = req.user.id;
+    settings.updatedByName = req.user.name;
+    settings.updatedAt = new Date();
+    
+    await settings.save();
+    await store.save();
+    
+    console.log(`✅ Store settings updated for store: ${store.name} (${storeId})`);
+    
+    res.json({
+      success: true,
+      settings: settings.store,
+      message: 'Store settings updated successfully'
+    });
+  } catch (error) {
+    console.error('Update store settings error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== MAIN SETTINGS (Legacy/Compatibility) ====================
+
+// Get settings from database (with store context if available)
+export const getSettings = async (req, res) => {
+  try {
+    // SAFE: Check if req exists and has query/body properties
+    let storeId = null;
+    
+    if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    } else if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    }
+    
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
+    
+    if (!settings) {
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
     }
     
     res.json({
@@ -34,25 +397,38 @@ export const getSettings = async (req, res) => {
   }
 };
 
-// Update settings in database
+// Update settings in database (with store context)
 export const updateSettings = async (req, res) => {
   try {
     const { section, data } = req.body;
     
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    // SAFE: Check if req exists and has query/body properties
+    let storeId = null;
     
-    if (!settings) {
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name
-      });
+    if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    } else if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
     }
     
-    // Update the specific section
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
+    
+    if (!settings) {
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
+    }
+    
     if (section && data) {
       settings[section] = { ...settings[section], ...data };
     } else {
-      // Update all sections
       if (req.body.store) settings.store = { ...settings.store, ...req.body.store };
       if (req.body.receipt) settings.receipt = { ...settings.receipt, ...req.body.receipt };
       if (req.body.hardware) settings.hardware = { ...settings.hardware, ...req.body.hardware };
@@ -61,10 +437,21 @@ export const updateSettings = async (req, res) => {
       if (req.body.appearance) settings.appearance = { ...settings.appearance, ...req.body.appearance };
     }
     
+    if (storeId && req.body.store) {
+      const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+      if (store) {
+        if (req.body.store.name) store.name = req.body.store.name;
+        if (req.body.store.address !== undefined) store.address = req.body.store.address;
+        if (req.body.store.phone !== undefined) store.phone = req.body.store.phone;
+        if (req.body.store.email !== undefined) store.email = req.body.store.email;
+        if (req.body.store.taxRate !== undefined) store.taxRate = req.body.store.taxRate;
+        await store.save();
+      }
+    }
+    
     settings.updatedBy = req.user.id;
     settings.updatedByName = req.user.name;
     settings.updatedAt = new Date();
-    
     await settings.save();
     
     res.json({
@@ -85,77 +472,31 @@ export const updateSettings = async (req, res) => {
   }
 };
 
-// Get store settings only (user-specific)
-export const getStoreSettings = async (req, res) => {
-  try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
-    
-    if (!settings) {
-      // Create default settings for this user
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name,
-        createdAt: new Date()
-      });
-      await settings.save();
-    }
-    
-    res.json({
-      success: true,
-      settings: settings.store
-    });
-  } catch (error) {
-    console.error('Get store settings error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
+// ==================== RECEIPT SETTINGS ====================
 
-// Update store settings (user-specific)
-export const updateStoreSettings = async (req, res) => {
-  try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
-    
-    if (!settings) {
-      // Create new settings with user info
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name,
-        store: { ...req.body },
-        createdAt: new Date()
-      });
-    } else {
-      // Update existing settings
-      settings.store = { ...settings.store, ...req.body };
-      settings.updatedBy = req.user.id;
-      settings.updatedByName = req.user.name;
-      settings.updatedAt = new Date();
-    }
-    
-    await settings.save();
-    
-    res.json({
-      success: true,
-      settings: settings.store,
-      message: 'Store settings updated successfully'
-    });
-  } catch (error) {
-    console.error('Update store settings error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-// Get receipt settings
 export const getReceiptSettings = async (req, res) => {
   try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let storeId = null;
+    
+    if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    } else if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    }
+    
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
     
     if (!settings) {
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name,
-        createdAt: new Date()
-      });
-      await settings.save();
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
     }
     
     res.json({
@@ -168,16 +509,29 @@ export const getReceiptSettings = async (req, res) => {
   }
 };
 
-// Update receipt settings
 export const updateReceiptSettings = async (req, res) => {
   try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let storeId = null;
+    
+    if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    } else if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    }
+    
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
     
     if (!settings) {
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name
-      });
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
     }
     
     settings.receipt = { ...settings.receipt, ...req.body };
@@ -197,18 +551,31 @@ export const updateReceiptSettings = async (req, res) => {
   }
 };
 
-// Get hardware settings
+// ==================== HARDWARE SETTINGS ====================
+
 export const getHardwareSettings = async (req, res) => {
   try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let storeId = null;
+    
+    if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    } else if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    }
+    
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
     
     if (!settings) {
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name,
-        createdAt: new Date()
-      });
-      await settings.save();
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
     }
     
     res.json({
@@ -221,16 +588,29 @@ export const getHardwareSettings = async (req, res) => {
   }
 };
 
-// Update hardware settings
 export const updateHardwareSettings = async (req, res) => {
   try {
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let storeId = null;
+    
+    if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    } else if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    }
+    
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
     
     if (!settings) {
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name
-      });
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
     }
     
     settings.hardware = { ...settings.hardware, ...req.body };
@@ -254,7 +634,15 @@ export const updateHardwareSettings = async (req, res) => {
 
 export const createBackup = async (req, res) => {
   try {
-    const settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let storeId = null;
+    
+    if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    } else if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    }
+    
+    const settings = await getSettingsWithStoreContext(req.user.id, storeId);
     const users = await User.find({}).select('-password');
     
     const backup = {
@@ -263,10 +651,10 @@ export const createBackup = async (req, res) => {
       settings,
       users,
       createdBy: req.user.name,
-      createdById: req.user.id
+      createdById: req.user.id,
+      storeId: storeId || null
     };
     
-    // Update last backup time
     if (settings) {
       settings.backup.lastBackup = new Date();
       await settings.save();
@@ -288,6 +676,14 @@ export const restoreBackup = async (req, res) => {
   try {
     const { backupData } = req.body;
     
+    let storeId = null;
+    
+    if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    } else if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    }
+    
     if (!backupData) {
       return res.status(400).json({
         success: false,
@@ -295,15 +691,21 @@ export const restoreBackup = async (req, res) => {
       });
     }
     
-    let settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let settings = await getSettingsWithStoreContext(req.user.id, storeId);
+    
     if (!settings) {
-      settings = new StoreSettings({
-        createdBy: req.user.id,
-        createdByName: req.user.name
-      });
+      if (storeId) {
+        const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+        if (store) {
+          settings = await createDefaultSettingsForStore(storeId, req.user.id, req.user.name, store);
+        } else {
+          settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+        }
+      } else {
+        settings = await createDefaultSettingsForUser(req.user.id, req.user.name);
+      }
     }
     
-    // Restore settings
     if (backupData.settings) {
       if (backupData.settings.store) settings.store = backupData.settings.store;
       if (backupData.settings.receipt) settings.receipt = backupData.settings.receipt;
@@ -317,6 +719,18 @@ export const restoreBackup = async (req, res) => {
     settings.updatedByName = req.user.name;
     settings.updatedAt = new Date();
     await settings.save();
+    
+    if (storeId && backupData.settings?.store) {
+      const store = await Store.findOne({ _id: storeId, createdBy: req.user.id });
+      if (store) {
+        if (backupData.settings.store.name) store.name = backupData.settings.store.name;
+        if (backupData.settings.store.address !== undefined) store.address = backupData.settings.store.address;
+        if (backupData.settings.store.phone !== undefined) store.phone = backupData.settings.store.phone;
+        if (backupData.settings.store.email !== undefined) store.email = backupData.settings.store.email;
+        if (backupData.settings.store.taxRate !== undefined) store.taxRate = backupData.settings.store.taxRate;
+        await store.save();
+      }
+    }
     
     res.json({
       success: true,
@@ -404,11 +818,9 @@ export const createUser = async (req, res) => {
       });
     }
     
-    // Hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
     
-    // Set permissions based on role
     let permissions = [];
     const rolePermissions = {
       admin: ['manage_stores', 'manage_users', 'manage_inventory', 'view_reports', 'process_sales', 'manage_settings', 'approve_transfers'],
@@ -469,7 +881,6 @@ export const updateUser = async (req, res) => {
     if (role) user.role = role;
     if (isActive !== undefined) user.isActive = isActive;
     
-    // Update permissions based on new role
     if (role) {
       const rolePermissions = {
         admin: ['manage_stores', 'manage_users', 'manage_inventory', 'view_reports', 'process_sales', 'manage_settings', 'approve_transfers'],
@@ -563,7 +974,15 @@ export const updateUserPassword = async (req, res) => {
 
 export const getSystemInfo = async (req, res) => {
   try {
-    const settings = await StoreSettings.findOne({ createdBy: req.user.id });
+    let storeId = null;
+    
+    if (req && req.query && req.query.storeId) {
+      storeId = req.query.storeId;
+    } else if (req && req.body && req.body.storeId) {
+      storeId = req.body.storeId;
+    }
+    
+    const settings = await getSettingsWithStoreContext(req.user.id, storeId);
     const userCount = await User.countDocuments();
     
     res.json({

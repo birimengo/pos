@@ -6,10 +6,11 @@ class DatabaseService {
   constructor() {
     this.db = null;
     this.dbName = 'BizCorePOS';
-    this.dbVersion = 13; // Incremented version for schema changes
+    this.dbVersion = 14; // Incremented version for schema changes
     this.initPromise = null;
     this.initialized = false;
     this.currentStoreId = null;
+    this.currentStoreMongoId = null;
     this.currentUserId = null;
   }
 
@@ -19,7 +20,7 @@ class DatabaseService {
     if (!this.initPromise) {
       this.initPromise = (async () => {
         try {
-          console.log('🔄 Initializing database v13 with user-store isolation...');
+          console.log('🔄 Initializing database v14 with enhanced user-store isolation...');
           
           this.db = await openDB(this.dbName, this.dbVersion, {
             upgrade: async (db, oldVersion, newVersion, transaction) => {
@@ -35,13 +36,17 @@ class DatabaseService {
                 productStore.createIndex('cloudId', 'cloudId', { unique: false });
                 productStore.createIndex('updatedAt', 'updatedAt', { unique: false });
                 productStore.createIndex('storeId', 'storeId', { unique: false });
+                productStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 productStore.createIndex('userId', 'userId', { unique: false });
                 productStore.createIndex('sku_storeId', ['sku', 'storeId'], { unique: true });
-                console.log('✅ Created products store with userId index');
+                console.log('✅ Created products store with store isolation indexes');
               } else {
                 const productStore = transaction.objectStore('products');
                 if (!productStore.indexNames.contains('storeId')) {
                   productStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!productStore.indexNames.contains('storeMongoId')) {
+                  productStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!productStore.indexNames.contains('userId')) {
                   productStore.createIndex('userId', 'userId', { unique: false });
@@ -66,12 +71,16 @@ class DatabaseService {
                 customerStore.createIndex('cloudId', 'cloudId', { unique: false });
                 customerStore.createIndex('updatedAt', 'updatedAt', { unique: false });
                 customerStore.createIndex('storeId', 'storeId', { unique: false });
+                customerStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 customerStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created customers store with userId index');
+                console.log('✅ Created customers store with store isolation indexes');
               } else {
                 const customerStore = transaction.objectStore('customers');
                 if (!customerStore.indexNames.contains('storeId')) {
                   customerStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!customerStore.indexNames.contains('storeMongoId')) {
+                  customerStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!customerStore.indexNames.contains('userId')) {
                   customerStore.createIndex('userId', 'userId', { unique: false });
@@ -102,13 +111,17 @@ class DatabaseService {
                 transactionStore.createIndex('dueDate', 'dueDate', { unique: false });
                 transactionStore.createIndex('remaining', 'remaining', { unique: false });
                 transactionStore.createIndex('storeId', 'storeId', { unique: false });
+                transactionStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 transactionStore.createIndex('userId', 'userId', { unique: false });
                 transactionStore.createIndex('receiptNumber_storeId', ['receiptNumber', 'storeId'], { unique: true });
-                console.log('✅ Created transactions store with userId index');
+                console.log('✅ Created transactions store with store isolation indexes');
               } else {
                 const transactionStore = transaction.objectStore('transactions');
                 if (!transactionStore.indexNames.contains('storeId')) {
                   transactionStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!transactionStore.indexNames.contains('storeMongoId')) {
+                  transactionStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!transactionStore.indexNames.contains('userId')) {
                   transactionStore.createIndex('userId', 'userId', { unique: false });
@@ -157,12 +170,16 @@ class DatabaseService {
                 syncQueueStore.createIndex('productId', 'productId', { unique: false });
                 syncQueueStore.createIndex('returnId', 'returnId', { unique: false });
                 syncQueueStore.createIndex('storeId', 'storeId', { unique: false });
+                syncQueueStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 syncQueueStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created syncQueue store with userId index');
+                console.log('✅ Created syncQueue store with store isolation indexes');
               } else {
                 const syncQueueStore = transaction.objectStore('syncQueue');
                 if (!syncQueueStore.indexNames.contains('storeId')) {
                   syncQueueStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!syncQueueStore.indexNames.contains('storeMongoId')) {
+                  syncQueueStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!syncQueueStore.indexNames.contains('userId')) {
                   syncQueueStore.createIndex('userId', 'userId', { unique: false });
@@ -191,12 +208,16 @@ class DatabaseService {
                 stockHistoryStore.createIndex('transactionId', 'transactionId', { unique: false });
                 stockHistoryStore.createIndex('synced', 'synced', { unique: false });
                 stockHistoryStore.createIndex('storeId', 'storeId', { unique: false });
+                stockHistoryStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 stockHistoryStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created stockHistory store with userId index');
+                console.log('✅ Created stockHistory store with store isolation indexes');
               } else {
                 const stockHistoryStore = transaction.objectStore('stockHistory');
                 if (!stockHistoryStore.indexNames.contains('storeId')) {
                   stockHistoryStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!stockHistoryStore.indexNames.contains('storeMongoId')) {
+                  stockHistoryStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!stockHistoryStore.indexNames.contains('userId')) {
                   stockHistoryStore.createIndex('userId', 'userId', { unique: false });
@@ -225,12 +246,16 @@ class DatabaseService {
                 returnsStore.createIndex('synced', 'synced', { unique: false });
                 returnsStore.createIndex('cloudId', 'cloudId', { unique: false });
                 returnsStore.createIndex('storeId', 'storeId', { unique: false });
+                returnsStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 returnsStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created returns store with userId index');
+                console.log('✅ Created returns store with store isolation indexes');
               } else {
                 const returnsStore = transaction.objectStore('returns');
                 if (!returnsStore.indexNames.contains('storeId')) {
                   returnsStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!returnsStore.indexNames.contains('storeMongoId')) {
+                  returnsStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!returnsStore.indexNames.contains('userId')) {
                   returnsStore.createIndex('userId', 'userId', { unique: false });
@@ -274,7 +299,8 @@ class DatabaseService {
                 storesStore.createIndex('cloudId', 'cloudId', { unique: false });
                 storesStore.createIndex('_id', '_id', { unique: false });
                 storesStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created stores store with userId index');
+                storesStore.createIndex('mongoId', 'mongoId', { unique: false });
+                console.log('✅ Created stores store with store isolation indexes');
               } else {
                 const storesStore = transaction.objectStore('stores');
                 if (!storesStore.indexNames.contains('isDefault')) {
@@ -285,6 +311,9 @@ class DatabaseService {
                 }
                 if (!storesStore.indexNames.contains('cloudId')) {
                   storesStore.createIndex('cloudId', 'cloudId', { unique: false });
+                }
+                if (!storesStore.indexNames.contains('mongoId')) {
+                  storesStore.createIndex('mongoId', 'mongoId', { unique: false });
                 }
                 if (!storesStore.indexNames.contains('_id')) {
                   storesStore.createIndex('_id', '_id', { unique: false });
@@ -312,12 +341,16 @@ class DatabaseService {
                 transfersStore.createIndex('fromStore', 'fromStore', { unique: false });
                 transfersStore.createIndex('toStore', 'toStore', { unique: false });
                 transfersStore.createIndex('storeId', 'storeId', { unique: false });
+                transfersStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 transfersStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created transfers store with userId index');
+                console.log('✅ Created transfers store with store isolation indexes');
               } else {
                 const transfersStore = transaction.objectStore('transfers');
                 if (!transfersStore.indexNames.contains('storeId')) {
                   transfersStore.createIndex('storeId', 'storeId', { unique: false });
+                }
+                if (!transfersStore.indexNames.contains('storeMongoId')) {
+                  transfersStore.createIndex('storeMongoId', 'storeMongoId', { unique: false });
                 }
                 if (!transfersStore.indexNames.contains('userId')) {
                   transfersStore.createIndex('userId', 'userId', { unique: false });
@@ -343,11 +376,15 @@ class DatabaseService {
               if (!db.objectStoreNames.contains('settings')) {
                 const settingsStore = db.createObjectStore('settings', { keyPath: 'key' });
                 settingsStore.createIndex('userId', 'userId', { unique: false });
-                console.log('✅ Created settings store with userId index');
+                settingsStore.createIndex('storeId', 'storeId', { unique: false });
+                console.log('✅ Created settings store with store isolation indexes');
               } else {
                 const settingsStore = transaction.objectStore('settings');
                 if (!settingsStore.indexNames.contains('userId')) {
                   settingsStore.createIndex('userId', 'userId', { unique: false });
+                }
+                if (!settingsStore.indexNames.contains('storeId')) {
+                  settingsStore.createIndex('storeId', 'storeId', { unique: false });
                 }
               }
             }
@@ -356,7 +393,7 @@ class DatabaseService {
           await opfs.init();
           
           this.initialized = true;
-          console.log('✅ Database service v13 initialized successfully');
+          console.log('✅ Database service v14 initialized successfully with store isolation');
           return this.db;
         } catch (error) {
           console.error('❌ Failed to initialize database:', error);
@@ -394,6 +431,15 @@ class DatabaseService {
     return this.currentStoreId || localStorage.getItem('currentStoreId');
   }
 
+  setCurrentStoreMongoId(mongoId) {
+    this.currentStoreMongoId = mongoId;
+    console.log(`📌 Current store MongoDB ID set to: ${mongoId}`);
+  }
+
+  getCurrentStoreMongoId() {
+    return this.currentStoreMongoId;
+  }
+
   async getCurrentStoreObject() {
     const storeId = this.getCurrentStore();
     if (!storeId) return null;
@@ -405,8 +451,17 @@ class DatabaseService {
       store = allStores.find(s => 
         String(s._id) === storeId || 
         String(s.cloudId) === storeId ||
-        String(s.id) === storeId
+        String(s.id) === storeId ||
+        String(s.mongoId) === storeId
       );
+    }
+    
+    // Store the MongoDB ID for future use
+    if (store) {
+      const mongoId = store._id || store.cloudId || store.mongoId;
+      if (mongoId) {
+        this.setCurrentStoreMongoId(mongoId);
+      }
     }
     
     return store;
@@ -416,13 +471,29 @@ class DatabaseService {
     const store = await this.getCurrentStoreObject();
     if (!store) return null;
     
+    // Priority: MongoDB _id > cloudId > mongoId > id
     if (store._id && /^[0-9a-fA-F]{24}$/.test(store._id)) {
       return store._id;
     }
     if (store.cloudId && /^[0-9a-fA-F]{24}$/.test(store.cloudId)) {
       return store.cloudId;
     }
+    if (store.mongoId && /^[0-9a-fA-F]{24}$/.test(store.mongoId)) {
+      return store.mongoId;
+    }
     return store.id;
+  }
+
+  // Helper to check if an item belongs to the current store
+  itemBelongsToCurrentStore(item) {
+    if (!item) return false;
+    if (!this.currentStoreId && !this.currentStoreMongoId) return true; // No store filter
+    
+    const itemStoreId = String(item.storeId || item.storeMongoId || '');
+    const currentStoreId = String(this.currentStoreId || '');
+    const currentMongoId = String(this.currentStoreMongoId || '');
+    
+    return itemStoreId === currentStoreId || itemStoreId === currentMongoId;
   }
 
   // ==================== USER DATA MANAGEMENT ====================
@@ -459,10 +530,15 @@ class DatabaseService {
     
     // Clear localStorage items
     localStorage.removeItem('currentStoreId');
+    localStorage.removeItem('currentStoreMongoId');
     localStorage.removeItem('pos-settings');
     localStorage.removeItem('pos-customers');
     localStorage.removeItem('lastCloudSync');
     localStorage.removeItem('activeStoreId');
+    
+    // Reset current store tracking
+    this.currentStoreId = null;
+    this.currentStoreMongoId = null;
     
     console.log(`✅ User ${userId} data cleared`);
   }
@@ -481,13 +557,17 @@ class DatabaseService {
     }
     
     localStorage.removeItem('currentStoreId');
+    localStorage.removeItem('currentStoreMongoId');
     localStorage.removeItem('pos-settings');
     localStorage.removeItem('pos-customers');
     localStorage.removeItem('lastCloudSync');
     localStorage.removeItem('activeStoreId');
+    
+    this.currentStoreId = null;
+    this.currentStoreMongoId = null;
   }
 
-  // ==================== GENERIC CRUD WITH USER FILTERING ====================
+  // ==================== GENERIC CRUD WITH USER AND STORE FILTERING ====================
 
   async getAll(storeName) {
     const db = await this.ensureInitialized();
@@ -500,15 +580,26 @@ class DatabaseService {
       const tx = db.transaction(storeName, 'readonly');
       const store = tx.objectStore(storeName);
       
-      // Filter by current user if userId index exists
+      let results = [];
+      
+      // First filter by current user
       if (this.currentUserId && store.indexNames.contains('userId')) {
         const index = store.index('userId');
-        const result = await index.getAll(this.currentUserId);
-        return result || [];
+        results = await index.getAll(this.currentUserId);
+      } else {
+        results = await store.getAll();
       }
       
-      const result = await store.getAll();
-      return result || [];
+      // Then filter by current store if applicable
+      if (this.currentStoreId && store.indexNames.contains('storeId')) {
+        results = results.filter(item => {
+          const itemStoreId = String(item.storeId || item.storeMongoId || '');
+          return itemStoreId === String(this.currentStoreId) || 
+                 itemStoreId === String(this.currentStoreMongoId);
+        });
+      }
+      
+      return results || [];
     } catch (error) {
       console.error(`Error getting all from ${storeName}:`, error);
       return [];
@@ -558,9 +649,15 @@ class DatabaseService {
     const key = String(id);
     const item = await db.get(storeName, key);
     
-    // Verify user ownership if userId exists
+    // Verify user ownership
     if (item && this.currentUserId && item.userId && String(item.userId) !== String(this.currentUserId)) {
       console.warn(`Access denied: ${storeName} item ${id} belongs to different user`);
+      return null;
+    }
+    
+    // Verify store ownership
+    if (item && this.currentStoreId && !this.itemBelongsToCurrentStore(item)) {
+      console.warn(`Access denied: ${storeName} item ${id} belongs to different store`);
       return null;
     }
     
@@ -575,6 +672,7 @@ class DatabaseService {
       id: String(id), 
       createdAt: new Date().toISOString(),
       storeId: data.storeId || this.currentStoreId,
+      storeMongoId: data.storeMongoId || this.currentStoreMongoId,
       userId: data.userId || this.currentUserId
     };
     await db.add(storeName, item);
@@ -584,9 +682,15 @@ class DatabaseService {
   async put(storeName, data) {
     const db = await this.ensureInitialized();
     
-    // Ensure userId is set
+    // Ensure userId and storeId are set
     if (!data.userId && this.currentUserId) {
       data.userId = this.currentUserId;
+    }
+    if (!data.storeId && this.currentStoreId) {
+      data.storeId = this.currentStoreId;
+    }
+    if (!data.storeMongoId && this.currentStoreMongoId) {
+      data.storeMongoId = this.currentStoreMongoId;
     }
     
     if (storeName === 'customers') {
@@ -609,6 +713,9 @@ class DatabaseService {
     if (item.id) item.id = String(item.id);
     if (!item.storeId && this.currentStoreId) {
       item.storeId = this.currentStoreId;
+    }
+    if (!item.storeMongoId && this.currentStoreMongoId) {
+      item.storeMongoId = this.currentStoreMongoId;
     }
     if (!item.userId && this.currentUserId) {
       item.userId = this.currentUserId;
@@ -641,15 +748,19 @@ class DatabaseService {
     if (!customerData.storeId && this.currentStoreId) {
       customerData.storeId = this.currentStoreId;
     }
+    if (!customerData.storeMongoId && this.currentStoreMongoId) {
+      customerData.storeMongoId = this.currentStoreMongoId;
+    }
     if (!customerData.userId && this.currentUserId) {
       customerData.userId = this.currentUserId;
     }
     
-    console.log('📝 Saving customer:', {
+    console.log('📝 Saving customer with store isolation:', {
       id: customerData.id,
       name: customerData.name,
       email: customerData.email || 'no-email',
       storeId: customerData.storeId,
+      storeMongoId: customerData.storeMongoId,
       userId: customerData.userId,
       cloudId: customerData.cloudId || customerData._id
     });
@@ -698,6 +809,9 @@ class DatabaseService {
     if (!transactionData.storeId && this.currentStoreId) {
       transactionData.storeId = this.currentStoreId;
     }
+    if (!transactionData.storeMongoId && this.currentStoreMongoId) {
+      transactionData.storeMongoId = this.currentStoreMongoId;
+    }
     if (!transactionData.userId && this.currentUserId) {
       transactionData.userId = this.currentUserId;
     }
@@ -708,13 +822,14 @@ class DatabaseService {
       transactionData.createdAt = now;
     }
     
-    console.log('📝 Saving transaction:', {
+    console.log('📝 Saving transaction with store isolation:', {
       id: transactionData.id,
       receiptNumber: transactionData.receiptNumber,
       customer: transactionData.customer?.name,
       total: transactionData.total,
       remaining: transactionData.remaining,
       storeId: transactionData.storeId,
+      storeMongoId: transactionData.storeMongoId,
       userId: transactionData.userId,
       isCredit: transactionData.isCredit,
       isInstallment: transactionData.isInstallment,
@@ -737,6 +852,9 @@ class DatabaseService {
     if (!productData.storeId && this.currentStoreId) {
       productData.storeId = this.currentStoreId;
     }
+    if (!productData.storeMongoId && this.currentStoreMongoId) {
+      productData.storeMongoId = this.currentStoreMongoId;
+    }
     if (!productData.userId && this.currentUserId) {
       productData.userId = this.currentUserId;
     }
@@ -747,11 +865,12 @@ class DatabaseService {
       productData.createdAt = now;
     }
     
-    console.log('📝 Saving product:', {
+    console.log('📝 Saving product with store isolation:', {
       id: productData.id,
       name: productData.name,
       sku: productData.sku,
       storeId: productData.storeId,
+      storeMongoId: productData.storeMongoId,
       userId: productData.userId,
       cloudId: productData.cloudId
     });
@@ -774,16 +893,20 @@ class DatabaseService {
     if (!historyData.storeId && this.currentStoreId) {
       historyData.storeId = this.currentStoreId;
     }
+    if (!historyData.storeMongoId && this.currentStoreMongoId) {
+      historyData.storeMongoId = this.currentStoreMongoId;
+    }
     if (!historyData.userId && this.currentUserId) {
       historyData.userId = this.currentUserId;
     }
     
-    console.log('📝 Saving stock history:', {
+    console.log('📝 Saving stock history with store isolation:', {
       id: historyData.id,
       productName: historyData.productName,
       adjustmentType: historyData.adjustmentType,
       quantityChange: historyData.quantityChange,
       storeId: historyData.storeId,
+      storeMongoId: historyData.storeMongoId,
       userId: historyData.userId
     });
     
@@ -814,11 +937,14 @@ class DatabaseService {
     if (!returnData.storeId && this.currentStoreId) {
       returnData.storeId = this.currentStoreId;
     }
+    if (!returnData.storeMongoId && this.currentStoreMongoId) {
+      returnData.storeMongoId = this.currentStoreMongoId;
+    }
     if (!returnData.userId && this.currentUserId) {
       returnData.userId = this.currentUserId;
     }
     
-    console.log('📝 Saving return record:', {
+    console.log('📝 Saving return record with store isolation:', {
       id: returnData.id,
       originalTransactionId: returnData.originalTransactionId,
       originalReceiptNumber: returnData.originalReceiptNumber,
@@ -826,6 +952,7 @@ class DatabaseService {
       condition: returnData.condition,
       totalRefund: returnData.totalRefund,
       storeId: returnData.storeId,
+      storeMongoId: returnData.storeMongoId,
       userId: returnData.userId
     });
     
@@ -836,16 +963,25 @@ class DatabaseService {
   async _saveStore(db, data) {
     const storeData = { ...data };
     
+    // Determine the MongoDB ID for cloud sync
     if (data._id && /^[0-9a-fA-F]{24}$/.test(data._id)) {
       storeData.id = data._id;
       storeData._id = data._id;
       storeData.cloudId = data._id;
+      storeData.mongoId = data._id;
       console.log('📌 Using MongoDB _id as store ID:', data._id);
     } else if (data.cloudId && /^[0-9a-fA-F]{24}$/.test(data.cloudId)) {
       storeData.id = data.cloudId;
       storeData._id = data.cloudId;
       storeData.cloudId = data.cloudId;
+      storeData.mongoId = data.cloudId;
       console.log('📌 Using cloudId as store ID:', data.cloudId);
+    } else if (data.mongoId && /^[0-9a-fA-F]{24}$/.test(data.mongoId)) {
+      storeData.id = data.mongoId;
+      storeData._id = data.mongoId;
+      storeData.cloudId = data.mongoId;
+      storeData.mongoId = data.mongoId;
+      console.log('📌 Using mongoId as store ID:', data.mongoId);
     } else if (!storeData.id) {
       storeData.id = `store_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       console.log('⚠️ Creating temporary local store ID:', storeData.id);
@@ -868,10 +1004,14 @@ class DatabaseService {
     if (data.cloudId) {
       storeData.cloudId = data.cloudId;
     }
+    if (data.mongoId) {
+      storeData.mongoId = data.mongoId;
+    }
     
-    console.log('📝 Saving store:', {
+    console.log('📝 Saving store with isolation:', {
       id: storeData.id,
       _id: storeData._id,
+      mongoId: storeData.mongoId,
       name: storeData.name,
       isDefault: storeData.isDefault,
       userId: storeData.userId
@@ -895,11 +1035,14 @@ class DatabaseService {
     if (!transferData.storeId && this.currentStoreId) {
       transferData.storeId = this.currentStoreId;
     }
+    if (!transferData.storeMongoId && this.currentStoreMongoId) {
+      transferData.storeMongoId = this.currentStoreMongoId;
+    }
     if (!transferData.userId && this.currentUserId) {
       transferData.userId = this.currentUserId;
     }
     
-    console.log('📝 Saving transfer:', {
+    console.log('📝 Saving transfer with store isolation:', {
       id: transferData.id,
       fromStore: transferData.fromStore,
       toStore: transferData.toStore,
@@ -907,6 +1050,7 @@ class DatabaseService {
       quantity: transferData.quantity,
       status: transferData.status,
       storeId: transferData.storeId,
+      storeMongoId: transferData.storeMongoId,
       userId: transferData.userId
     });
     
@@ -947,8 +1091,12 @@ class DatabaseService {
     const index = store.index(indexName);
     let results = await index.getAll(value);
     
+    // Filter by user and store
     if (this.currentUserId && store.indexNames.contains('userId')) {
       results = results.filter(item => String(item.userId) === String(this.currentUserId));
+    }
+    if (this.currentStoreId && store.indexNames.contains('storeId')) {
+      results = results.filter(item => this.itemBelongsToCurrentStore(item));
     }
     
     return results;
@@ -972,8 +1120,12 @@ class DatabaseService {
     const range = IDBKeyRange.bound(lower, upper, lowerOpen, upperOpen);
     let results = await index.getAll(range);
     
+    // Filter by user and store
     if (this.currentUserId && store.indexNames.contains('userId')) {
       results = results.filter(item => String(item.userId) === String(this.currentUserId));
+    }
+    if (this.currentStoreId && store.indexNames.contains('storeId')) {
+      results = results.filter(item => this.itemBelongsToCurrentStore(item));
     }
     
     return results;
@@ -985,25 +1137,28 @@ class DatabaseService {
     if (!product.userId && this.currentUserId) {
       product.userId = this.currentUserId;
     }
+    if (!product.storeId && this.currentStoreId) {
+      product.storeId = this.currentStoreId;
+    }
+    if (!product.storeMongoId && this.currentStoreMongoId) {
+      product.storeMongoId = this.currentStoreMongoId;
+    }
     return this.put('products', product);
   }
 
   async getProduct(id) {
     const product = await this.get('products', String(id));
-    if (product && this.currentStoreId && product.storeId !== this.currentStoreId) {
+    if (product && !this.itemBelongsToCurrentStore(product)) {
       console.warn(`Product ${id} belongs to different store, access denied`);
-      return null;
-    }
-    if (product && this.currentUserId && product.userId !== this.currentUserId) {
-      console.warn(`Product ${id} belongs to different user, access denied`);
       return null;
     }
     return product;
   }
 
   async getProducts() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('products', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allProducts = await this.getAll('products');
+      return allProducts.filter(p => this.itemBelongsToCurrentStore(p));
     }
     return this.getAll('products');
   }
@@ -1044,24 +1199,27 @@ class DatabaseService {
     if (!customer.userId && this.currentUserId) {
       customer.userId = this.currentUserId;
     }
+    if (!customer.storeId && this.currentStoreId) {
+      customer.storeId = this.currentStoreId;
+    }
+    if (!customer.storeMongoId && this.currentStoreMongoId) {
+      customer.storeMongoId = this.currentStoreMongoId;
+    }
     return this.put('customers', customer);
   }
 
   async getCustomers() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('customers', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allCustomers = await this.getAll('customers');
+      return allCustomers.filter(c => this.itemBelongsToCurrentStore(c));
     }
     return this.getAll('customers');
   }
 
   async getCustomer(id) {
     const customer = await this.get('customers', String(id));
-    if (customer && this.currentStoreId && customer.storeId !== this.currentStoreId) {
+    if (customer && !this.itemBelongsToCurrentStore(customer)) {
       console.warn(`Customer ${id} belongs to different store, access denied`);
-      return null;
-    }
-    if (customer && this.currentUserId && customer.userId !== this.currentUserId) {
-      console.warn(`Customer ${id} belongs to different user, access denied`);
       return null;
     }
     return customer;
@@ -1107,17 +1265,19 @@ class DatabaseService {
     if (!transaction.userId && this.currentUserId) {
       transaction.userId = this.currentUserId;
     }
+    if (!transaction.storeId && this.currentStoreId) {
+      transaction.storeId = this.currentStoreId;
+    }
+    if (!transaction.storeMongoId && this.currentStoreMongoId) {
+      transaction.storeMongoId = this.currentStoreMongoId;
+    }
     return this.put('transactions', transaction);
   }
 
   async getTransaction(id) {
     const transaction = await this.get('transactions', String(id));
-    if (transaction && this.currentStoreId && transaction.storeId !== this.currentStoreId) {
+    if (transaction && !this.itemBelongsToCurrentStore(transaction)) {
       console.warn(`Transaction ${id} belongs to different store, access denied`);
-      return null;
-    }
-    if (transaction && this.currentUserId && transaction.userId !== this.currentUserId) {
-      console.warn(`Transaction ${id} belongs to different user, access denied`);
       return null;
     }
     if (transaction) {
@@ -1128,8 +1288,9 @@ class DatabaseService {
   }
 
   async getTransactions() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('transactions', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allTransactions = await this.getAll('transactions');
+      return allTransactions.filter(t => this.itemBelongsToCurrentStore(t));
     }
     return this.getAll('transactions');
   }
@@ -1245,6 +1406,12 @@ class DatabaseService {
     if (!historyData.userId && this.currentUserId) {
       historyData.userId = this.currentUserId;
     }
+    if (!historyData.storeId && this.currentStoreId) {
+      historyData.storeId = this.currentStoreId;
+    }
+    if (!historyData.storeMongoId && this.currentStoreMongoId) {
+      historyData.storeMongoId = this.currentStoreMongoId;
+    }
     return this.put('stockHistory', historyData);
   }
 
@@ -1257,8 +1424,9 @@ class DatabaseService {
   }
 
   async getStockHistoryByStore() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('stockHistory', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allHistory = await this.getAll('stockHistory');
+      return allHistory.filter(h => this.itemBelongsToCurrentStore(h));
     }
     return this.getAll('stockHistory');
   }
@@ -1335,25 +1503,28 @@ class DatabaseService {
     if (!returnData.userId && this.currentUserId) {
       returnData.userId = this.currentUserId;
     }
+    if (!returnData.storeId && this.currentStoreId) {
+      returnData.storeId = this.currentStoreId;
+    }
+    if (!returnData.storeMongoId && this.currentStoreMongoId) {
+      returnData.storeMongoId = this.currentStoreMongoId;
+    }
     return this.put('returns', returnData);
   }
 
   async getReturn(id) {
     const returnRecord = await this.get('returns', String(id));
-    if (returnRecord && this.currentStoreId && returnRecord.storeId !== this.currentStoreId) {
+    if (returnRecord && !this.itemBelongsToCurrentStore(returnRecord)) {
       console.warn(`Return ${id} belongs to different store, access denied`);
-      return null;
-    }
-    if (returnRecord && this.currentUserId && returnRecord.userId !== this.currentUserId) {
-      console.warn(`Return ${id} belongs to different user, access denied`);
       return null;
     }
     return returnRecord;
   }
 
   async getAllReturns() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('returns', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allReturns = await this.getAll('returns');
+      return allReturns.filter(r => this.itemBelongsToCurrentStore(r));
     }
     return this.getAll('returns');
   }
@@ -1519,25 +1690,28 @@ class DatabaseService {
     if (!transfer.userId && this.currentUserId) {
       transfer.userId = this.currentUserId;
     }
+    if (!transfer.storeId && this.currentStoreId) {
+      transfer.storeId = this.currentStoreId;
+    }
+    if (!transfer.storeMongoId && this.currentStoreMongoId) {
+      transfer.storeMongoId = this.currentStoreMongoId;
+    }
     return this.put('transfers', transfer);
   }
 
   async getTransfer(id) {
     const transfer = await this.get('transfers', String(id));
-    if (transfer && this.currentStoreId && transfer.storeId !== this.currentStoreId) {
+    if (transfer && !this.itemBelongsToCurrentStore(transfer)) {
       console.warn(`Transfer ${id} belongs to different store, access denied`);
-      return null;
-    }
-    if (transfer && this.currentUserId && transfer.userId !== this.currentUserId) {
-      console.warn(`Transfer ${id} belongs to different user, access denied`);
       return null;
     }
     return transfer;
   }
 
   async getAllTransfers() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('transfers', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allTransfers = await this.getAll('transfers');
+      return allTransfers.filter(t => this.itemBelongsToCurrentStore(t));
     }
     return this.getAll('transfers');
   }
@@ -1628,9 +1802,15 @@ class DatabaseService {
   async addToSyncQueue(item) {
     const db = await this.ensureInitialized();
     
-    // Add userId to queue item
+    // Add userId and storeId to queue item
     if (this.currentUserId && !item.userId) {
       item.userId = this.currentUserId;
+    }
+    if (this.currentStoreId && !item.storeId) {
+      item.storeId = this.currentStoreId;
+    }
+    if (this.currentStoreMongoId && !item.storeMongoId) {
+      item.storeMongoId = this.currentStoreMongoId;
     }
     
     let existing = null;
@@ -1656,6 +1836,7 @@ class DatabaseService {
       lastAttempt: null,
       error: null,
       storeId: this.currentStoreId,
+      storeMongoId: this.currentStoreMongoId,
       userId: this.currentUserId
     };
     
@@ -1680,8 +1861,9 @@ class DatabaseService {
   }
 
   async getSyncQueue() {
-    if (this.currentStoreId) {
-      return this.getAllByStore('syncQueue', this.currentStoreId);
+    if (this.currentStoreId || this.currentStoreMongoId) {
+      const allQueue = await this.getAll('syncQueue');
+      return allQueue.filter(q => this.itemBelongsToCurrentStore(q));
     }
     return this.getAll('syncQueue');
   }
@@ -1761,6 +1943,8 @@ class DatabaseService {
       key, 
       value, 
       userId: this.currentUserId,
+      storeId: this.currentStoreId,
+      storeMongoId: this.currentStoreMongoId,
       updatedAt: new Date().toISOString() 
     });
   }
@@ -1885,7 +2069,9 @@ class DatabaseService {
         unsynced: allTransfers.filter(t => !t.synced).length
       },
       queueLength: queue.length,
-      isOnline: navigator.onLine
+      isOnline: navigator.onLine,
+      currentStoreId: this.currentStoreId,
+      currentStoreMongoId: this.currentStoreMongoId
     };
   }
 

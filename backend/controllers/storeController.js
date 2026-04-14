@@ -1,6 +1,7 @@
 // backend/controllers/storeController.js
 import mongoose from 'mongoose';
 import Store from '../models/Store.js';
+import StoreSettings from '../models/StoreSettings.js';
 import Product from '../models/Product.js';
 import Transaction from '../models/Transaction.js';
 import Customer from '../models/Customer.js';
@@ -41,6 +42,69 @@ const formatStoreResponse = (store) => ({
   users: store.users || []
 });
 
+// Helper to create store settings
+const createStoreSettings = async (storeId, userId, userName, storeData) => {
+  try {
+    const settings = new StoreSettings({
+      storeId: storeId,
+      store: {
+        name: storeData.name,
+        address: storeData.address || '',
+        phone: storeData.phone || '',
+        email: storeData.email || '',
+        taxRate: storeData.taxRate || 0,
+        country: 'US',
+        currency: 'USD'
+      },
+      receipt: {
+        header: 'THANK YOU FOR SHOPPING!',
+        footer: 'Returns accepted within 30 days',
+        showLogo: true,
+        showTax: true,
+        showDiscount: true,
+        showCustomerInfo: true,
+        showCashier: true,
+        paperSize: '80mm'
+      },
+      hardware: {
+        printer: 'USB',
+        cashDrawer: 'COM1',
+        barcodeScanner: 'USB',
+        customerDisplay: true,
+        scale: false
+      },
+      users: {
+        requireLogin: true,
+        sessionTimeout: 480,
+        maxFailedAttempts: 3
+      },
+      backup: {
+        autoBackup: true,
+        backupFrequency: 'daily',
+        backupTime: '23:00',
+        cloudBackup: false
+      },
+      appearance: {
+        theme: 'light',
+        compactMode: false,
+        showProductImages: true,
+        defaultView: 'grid'
+      },
+      createdBy: userId,
+      createdByName: userName,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    await settings.save();
+    console.log('✅ Store settings created for store:', storeId);
+    return settings;
+  } catch (error) {
+    console.error('❌ Error creating store settings:', error);
+    return null;
+  }
+};
+
 // ==================== CREATE STORE (ADMIN ONLY) ====================
 
 export const createStore = async (req, res) => {
@@ -70,16 +134,16 @@ export const createStore = async (req, res) => {
       state: req.body.state || '',
       zip: req.body.zip || '',
       phone: req.body.phone || '',
-      email: req.body.email || '',
-      manager: req.body.manager || '',
+      email: req.body.email || req.user.email,
+      manager: req.body.manager || req.user.name,
       taxRate: req.body.taxRate || 0,
       openTime: req.body.openTime || '09:00',
       closeTime: req.body.closeTime || '21:00',
-      timezone: req.body.timezone || 'UTC',
+      timezone: req.body.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       open: req.body.open !== undefined ? req.body.open : true,
       settings: {
-        receiptHeader: req.body.settings?.receiptHeader || '',
-        receiptFooter: req.body.settings?.receiptFooter || '',
+        receiptHeader: req.body.settings?.receiptHeader || 'Thank you for shopping!',
+        receiptFooter: req.body.settings?.receiptFooter || 'Returns accepted within 30 days',
         currency: req.body.settings?.currency || 'USD'
       },
       active: req.body.active !== false,
@@ -98,6 +162,9 @@ export const createStore = async (req, res) => {
 
     const store = new Store(storeData);
     await store.save();
+
+    // Create store-specific settings
+    await createStoreSettings(store._id, req.user.id, req.user.name, storeData);
 
     // If this is the user's first store, make it default
     const userStoreCount = await Store.countDocuments({
@@ -265,6 +332,30 @@ export const updateStore = async (req, res) => {
     Object.assign(store, updateData);
     await store.save();
 
+    // Update store settings if country or currency changed
+    if (req.body.country || req.body.currency || req.body.taxRate !== undefined) {
+      let storeSettings = await StoreSettings.findOne({ storeId: store._id });
+      if (!storeSettings) {
+        storeSettings = new StoreSettings({
+          storeId: store._id,
+          createdBy: userId,
+          createdByName: req.user.name
+        });
+      }
+      
+      if (req.body.country) storeSettings.store.country = req.body.country;
+      if (req.body.currency) storeSettings.store.currency = req.body.currency;
+      if (req.body.taxRate !== undefined) storeSettings.store.taxRate = req.body.taxRate;
+      if (req.body.name) storeSettings.store.name = req.body.name;
+      if (req.body.address !== undefined) storeSettings.store.address = req.body.address;
+      if (req.body.phone !== undefined) storeSettings.store.phone = req.body.phone;
+      if (req.body.email !== undefined) storeSettings.store.email = req.body.email;
+      
+      storeSettings.updatedAt = new Date();
+      await storeSettings.save();
+      console.log(`✅ Store settings updated for store: ${store.name}`);
+    }
+
     console.log(`✅ Store updated: ${store.name} (Open: ${store.open})`);
 
     res.json({
@@ -321,7 +412,21 @@ export const deleteStore = async (req, res) => {
       });
     }
 
+    // Delete store settings
+    await StoreSettings.deleteOne({ storeId: store._id });
+    
+    // Delete the store
     await Store.findByIdAndDelete(id);
+
+    // If this was the default store, set another as default
+    if (store.isDefault) {
+      const anotherStore = await Store.findOne({ createdBy: userId, _id: { $ne: id } });
+      if (anotherStore) {
+        anotherStore.isDefault = true;
+        await anotherStore.save();
+        console.log(`📌 Set ${anotherStore.name} as new default store`);
+      }
+    }
 
     res.json({
       success: true,
@@ -519,6 +624,14 @@ export const removeUserFromStore = async (req, res) => {
       return res.status(404).json({
         success: false,
         error: 'Store not found or you do not have permission'
+      });
+    }
+    
+    // Don't remove store owner
+    if (store.createdBy && store.createdBy.toString() === userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot remove the store owner from the store'
       });
     }
     
@@ -775,6 +888,136 @@ export const getStoreStats = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Get store stats error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== GET STORE SETTINGS ====================
+
+export const getStoreSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
+    if (!store) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have access to this store'
+      });
+    }
+    
+    let settings = await StoreSettings.findOne({ storeId: id });
+    
+    if (!settings) {
+      settings = await createStoreSettings(id, userId, req.user.name, store);
+    }
+    
+    res.json({
+      success: true,
+      settings: settings.store,
+      receipt: settings.receipt,
+      hardware: settings.hardware,
+      users: settings.users,
+      backup: settings.backup,
+      appearance: settings.appearance
+    });
+  } catch (error) {
+    console.error('❌ Get store settings error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// ==================== UPDATE STORE SETTINGS ====================
+
+export const updateStoreSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    const { section, data } = req.body;
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid store ID format'
+      });
+    }
+    
+    const store = await Store.findOne({ _id: id, createdBy: userId });
+    if (!store) {
+      return res.status(403).json({
+        success: false,
+        error: 'You do not have access to this store'
+      });
+    }
+    
+    let settings = await StoreSettings.findOne({ storeId: id });
+    
+    if (!settings) {
+      settings = new StoreSettings({
+        storeId: id,
+        createdBy: userId,
+        createdByName: req.user.name
+      });
+    }
+    
+    // Update the specific section
+    if (section && data) {
+      if (section === 'store') {
+        settings.store = { ...settings.store, ...data };
+        // Also update the main store record
+        if (data.name) store.name = data.name;
+        if (data.address !== undefined) store.address = data.address;
+        if (data.phone !== undefined) store.phone = data.phone;
+        if (data.email !== undefined) store.email = data.email;
+        if (data.taxRate !== undefined) store.taxRate = data.taxRate;
+        await store.save();
+      } else {
+        settings[section] = { ...settings[section], ...data };
+      }
+    } else {
+      // Update all sections
+      if (req.body.store) {
+        settings.store = { ...settings.store, ...req.body.store };
+        if (req.body.store.name) store.name = req.body.store.name;
+        if (req.body.store.address !== undefined) store.address = req.body.store.address;
+        if (req.body.store.phone !== undefined) store.phone = req.body.store.phone;
+        if (req.body.store.email !== undefined) store.email = req.body.store.email;
+        if (req.body.store.taxRate !== undefined) store.taxRate = req.body.store.taxRate;
+        await store.save();
+      }
+      if (req.body.receipt) settings.receipt = { ...settings.receipt, ...req.body.receipt };
+      if (req.body.hardware) settings.hardware = { ...settings.hardware, ...req.body.hardware };
+      if (req.body.users) settings.users = { ...settings.users, ...req.body.users };
+      if (req.body.backup) settings.backup = { ...settings.backup, ...req.body.backup };
+      if (req.body.appearance) settings.appearance = { ...settings.appearance, ...req.body.appearance };
+    }
+    
+    settings.updatedBy = userId;
+    settings.updatedByName = req.user.name;
+    settings.updatedAt = new Date();
+    
+    await settings.save();
+    
+    res.json({
+      success: true,
+      settings: settings.store,
+      receipt: settings.receipt,
+      hardware: settings.hardware,
+      users: settings.users,
+      backup: settings.backup,
+      appearance: settings.appearance,
+      message: 'Store settings updated successfully'
+    });
+  } catch (error) {
+    console.error('❌ Update store settings error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -1117,6 +1360,10 @@ export const bulkCreateStores = async (req, res) => {
         isDefault: false
       });
       await store.save();
+      
+      // Create store settings for each store
+      await createStoreSettings(store._id, userId, req.user.name, store);
+      
       createdStores.push(store);
     }
     
@@ -1212,6 +1459,11 @@ export const bulkDeleteStores = async (req, res) => {
         error: 'Some stores have associated products or transactions. Please delete or transfer data first.',
         details: storesWithData
       });
+    }
+    
+    // Delete store settings for all stores being deleted
+    for (const storeId of storeIds) {
+      await StoreSettings.deleteOne({ storeId });
     }
     
     const result = await Store.deleteMany({ _id: { $in: storeIds }, createdBy: userId });
