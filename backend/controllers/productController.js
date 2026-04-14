@@ -1,6 +1,4 @@
-// backend/controllers/productController.js
 import Product from '../models/Product.js';
-import StockHistory from '../models/StockHistory.js';
 import { cloudinary } from '../config/cloudinary.js';
 
 // Get all products (filtered by store)
@@ -14,6 +12,7 @@ export const getAllProducts = async (req, res) => {
     const products = await Product.find({ storeId }).sort({ createdAt: -1 });
     res.json(products);
   } catch (error) {
+    console.error('Get all products error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -29,6 +28,7 @@ export const getProductById = async (req, res) => {
     if (!product) return res.status(404).json({ error: 'Product not found' });
     res.json(product);
   } catch (error) {
+    console.error('Get product by ID error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -41,22 +41,69 @@ export const createProduct = async (req, res) => {
       return res.status(400).json({ error: 'Store ID is required' });
     }
     
+    // Validate required fields
+    if (!req.body.name || !req.body.name.trim()) {
+      return res.status(400).json({ error: 'Product name is required' });
+    }
+    if (!req.body.sku || !req.body.sku.trim()) {
+      return res.status(400).json({ error: 'SKU is required' });
+    }
+    if (!req.body.price || isNaN(parseFloat(req.body.price))) {
+      return res.status(400).json({ error: 'Valid price is required' });
+    }
+    if (!req.body.cost || isNaN(parseFloat(req.body.cost))) {
+      return res.status(400).json({ error: 'Valid cost is required' });
+    }
+    if (!req.body.category || !req.body.category.trim()) {
+      return res.status(400).json({ error: 'Category is required' });
+    }
+    
     // Check if SKU already exists in this store
     const existingProduct = await Product.findOne({ 
-      sku: req.body.sku, 
+      sku: req.body.sku.trim(), 
       storeId 
     });
     if (existingProduct) {
       return res.status(400).json({ error: 'SKU already exists in this store' });
     }
     
-    const product = new Product({
-      ...req.body,
-      storeId
-    });
+    // CRITICAL FIX: Ensure images is an array of strings, not objects
+    let cleanImages = [];
+    if (req.body.images && Array.isArray(req.body.images)) {
+      cleanImages = req.body.images.filter(img => typeof img === 'string' && img.length > 0);
+    }
+    
+    // Ensure cloudinaryImages is an array of objects
+    let cleanCloudinaryImages = [];
+    if (req.body.cloudinaryImages && Array.isArray(req.body.cloudinaryImages)) {
+      cleanCloudinaryImages = req.body.cloudinaryImages.filter(img => img && img.url);
+    }
+    
+    // Prepare product data
+    const productData = {
+      name: req.body.name.trim(),
+      sku: req.body.sku.trim(),
+      barcode: req.body.barcode || '',
+      price: parseFloat(req.body.price),
+      cost: parseFloat(req.body.cost),
+      stock: parseInt(req.body.stock) || 0,
+      category: req.body.category.trim(),
+      supplier: req.body.supplier || '',
+      location: req.body.location || '',
+      reorderPoint: req.body.reorderPoint || 5,
+      description: req.body.description || '',
+      images: cleanImages,
+      cloudinaryImages: cleanCloudinaryImages,
+      storeId: storeId
+    };
+    
+    const product = new Product(productData);
     await product.save();
+    
+    console.log(`✅ Product created: ${product.name} (${product._id}) for store: ${storeId}`);
     res.status(201).json(product);
   } catch (error) {
+    console.error('Create product error:', error);
     res.status(400).json({ error: error.message });
   }
 };
@@ -65,167 +112,66 @@ export const createProduct = async (req, res) => {
 export const updateProduct = async (req, res) => {
   try {
     const storeId = req.body.storeId || req.user?.storeId;
-    const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, storeId },
-      { ...req.body, updatedAt: Date.now() },
-      { new: true, runValidators: true }
-    );
-    if (!product) return res.status(404).json({ error: 'Product not found' });
-    res.json(product);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-};
-
-// Update product stock (for transaction deletions/refunds)
-export const updateProductStock = async (req, res) => {
-  try {
-    const { quantityChange } = req.body;
-    const storeId = req.body.storeId || req.user?.storeId;
-    const product = await Product.findOne({ _id: req.params.id, storeId });
     
-    if (!product) {
+    // Find the product first
+    const existingProduct = await Product.findOne({ 
+      _id: req.params.id, 
+      storeId 
+    });
+    
+    if (!existingProduct) {
       return res.status(404).json({ error: 'Product not found' });
     }
     
-    const oldStock = product.stock;
-    product.stock = (product.stock || 0) + quantityChange;
-    product.updatedAt = Date.now();
-    await product.save();
+    // Prepare update data
+    const updateData = {};
     
-    console.log(`📦 Stock updated for ${product.name} (Store: ${storeId}): ${oldStock} → ${product.stock} (${quantityChange >= 0 ? '+' : ''}${quantityChange})`);
+    if (req.body.name !== undefined) updateData.name = req.body.name.trim();
+    if (req.body.sku !== undefined) updateData.sku = req.body.sku.trim();
+    if (req.body.barcode !== undefined) updateData.barcode = req.body.barcode;
+    if (req.body.price !== undefined) updateData.price = parseFloat(req.body.price);
+    if (req.body.cost !== undefined) updateData.cost = parseFloat(req.body.cost);
+    if (req.body.stock !== undefined) updateData.stock = parseInt(req.body.stock);
+    if (req.body.category !== undefined) updateData.category = req.body.category.trim();
+    if (req.body.supplier !== undefined) updateData.supplier = req.body.supplier;
+    if (req.body.location !== undefined) updateData.location = req.body.location;
+    if (req.body.reorderPoint !== undefined) updateData.reorderPoint = req.body.reorderPoint;
+    if (req.body.description !== undefined) updateData.description = req.body.description;
     
-    res.json({ 
-      success: true, 
-      product,
-      oldStock,
-      newStock: product.stock,
-      quantityChange
-    });
-  } catch (error) {
-    console.error('❌ Update product stock error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// Get stock history for a product (with store filter)
-export const getStockHistory = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const storeId = req.query.storeId || req.user?.storeId;
-    const { limit = 50, offset = 0, type } = req.query;
-    
-    let query = { productId: String(id), storeId };
-    if (type && type !== 'all') {
-      query.adjustmentType = type;
+    // CRITICAL FIX: Clean images array - must be array of strings
+    if (req.body.images !== undefined) {
+      if (Array.isArray(req.body.images)) {
+        updateData.images = req.body.images.filter(img => typeof img === 'string' && img.length > 0);
+      } else {
+        updateData.images = [];
+      }
     }
     
-    const history = await StockHistory.find(query)
-      .sort({ createdAt: -1 })
-      .skip(parseInt(offset))
-      .limit(parseInt(limit));
-    
-    const total = await StockHistory.countDocuments(query);
-    
-    res.json({
-      success: true,
-      history,
-      total,
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
-  } catch (error) {
-    console.error('Get stock history error:', error);
-    res.status(500).json({ error: error.message });
-  }
-};
-
-// Add stock history record
-export const addStockHistory = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const storeId = req.body.storeId || req.user?.storeId;
-    const { previousStock, newStock, quantityChange, adjustmentType, reason, notes, transactionId, transactionReceipt, productName, productSku } = req.body;
-    
-    let productNameValue = productName || 'Unknown Product';
-    let productSkuValue = productSku || 'Unknown SKU';
-    
-    try {
-      const product = await Product.findOne({ _id: id, storeId });
-      if (product) {
-        productNameValue = product.name;
-        productSkuValue = product.sku;
+    // Handle cloudinaryImages - must be array of objects
+    if (req.body.cloudinaryImages !== undefined) {
+      if (Array.isArray(req.body.cloudinaryImages)) {
+        updateData.cloudinaryImages = req.body.cloudinaryImages.filter(img => img && img.url);
+      } else {
+        updateData.cloudinaryImages = [];
       }
-    } catch (err) {
-      console.log('Product not found in database, using provided values');
     }
     
-    const historyRecord = new StockHistory({
-      productId: String(id),
-      productName: productNameValue,
-      productSku: productSkuValue,
-      previousStock: previousStock || 0,
-      newStock: newStock || 0,
-      quantityChange: quantityChange || 0,
-      adjustmentType: adjustmentType || 'adjustment',
-      reason: reason || '',
-      notes: notes || '',
-      transactionId: transactionId ? String(transactionId) : null,
-      transactionReceipt: transactionReceipt || null,
-      performedBy: req.user?.name || 'system',
-      userId: req.user?.id ? String(req.user.id) : null,
-      storeId: storeId,
-      synced: true,
-      createdAt: new Date()
-    });
+    updateData.updatedAt = Date.now();
     
-    await historyRecord.save();
+    // Update the product
+    const product = await Product.findOneAndUpdate(
+      { _id: req.params.id, storeId },
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
     
-    console.log(`📝 Stock history recorded: ${productNameValue} - ${quantityChange > 0 ? '+' : ''}${quantityChange} (${adjustmentType})`);
+    if (!product) return res.status(404).json({ error: 'Product not found' });
     
-    res.json({ success: true, history: historyRecord });
+    console.log(`✅ Product updated: ${product.name} (${product._id}) for store: ${storeId}`);
+    res.json(product);
   } catch (error) {
-    console.error('Add stock history error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-// Get stock summary for dashboard
-export const getStockSummary = async (req, res) => {
-  try {
-    const storeId = req.query.storeId || req.user?.storeId;
-    const stats = await StockHistory.aggregate([
-      { $match: { storeId: storeId ? String(storeId) : null } },
-      {
-        $group: {
-          _id: null,
-          totalAdjustments: { $sum: 1 },
-          totalAdded: {
-            $sum: {
-              $cond: [{ $gt: ['$quantityChange', 0] }, '$quantityChange', 0]
-            }
-          },
-          totalRemoved: {
-            $sum: {
-              $cond: [{ $lt: ['$quantityChange', 0] }, { $multiply: ['$quantityChange', -1] }, 0]
-            }
-          }
-        }
-      }
-    ]);
-    
-    const recentChanges = await StockHistory.find(storeId ? { storeId: String(storeId) } : {})
-      .sort({ createdAt: -1 })
-      .limit(20);
-    
-    res.json({
-      success: true,
-      stats: stats[0] || { totalAdjustments: 0, totalAdded: 0, totalRemoved: 0 },
-      recentChanges
-    });
-  } catch (error) {
-    console.error('Get stock summary error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Update product error:', error);
+    res.status(400).json({ error: error.message });
   }
 };
 
@@ -236,16 +182,24 @@ export const deleteProduct = async (req, res) => {
     const product = await Product.findOneAndDelete({ _id: req.params.id, storeId });
     if (!product) return res.status(404).json({ error: 'Product not found' });
     
+    // Delete images from Cloudinary
     if (product.cloudinaryImages && product.cloudinaryImages.length > 0) {
       for (const image of product.cloudinaryImages) {
-        await cloudinary.uploader.destroy(image.publicId);
+        if (image.publicId) {
+          try {
+            await cloudinary.uploader.destroy(image.publicId);
+            console.log(`🗑️ Deleted Cloudinary image: ${image.publicId}`);
+          } catch (err) {
+            console.warn('Failed to delete image from cloudinary:', err.message);
+          }
+        }
       }
     }
     
-    await StockHistory.deleteMany({ productId: String(req.params.id), storeId: String(storeId) });
-    
-    res.json({ success: true });
+    console.log(`✅ Product deleted: ${product.name} (${product._id})`);
+    res.json({ success: true, message: 'Product deleted successfully' });
   } catch (error) {
+    console.error('Delete product error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -259,6 +213,10 @@ export const uploadProductImages = async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
     const images = req.files.map((file, index) => ({
       url: file.path,
       publicId: file.filename,
@@ -269,8 +227,16 @@ export const uploadProductImages = async (req, res) => {
     }));
 
     product.cloudinaryImages.push(...images);
+    // Also add URLs to simple images array for compatibility
+    images.forEach(img => {
+      if (img.url && !product.images.includes(img.url)) {
+        product.images.push(img.url);
+      }
+    });
+    product.updatedAt = Date.now();
     await product.save();
 
+    console.log(`✅ Uploaded ${images.length} images for product: ${product.name}`);
     res.json({ success: true, images });
   } catch (error) {
     console.error('Upload error:', error);
@@ -292,12 +258,24 @@ export const deleteProductImage = async (req, res) => {
       return res.status(404).json({ error: 'Image not found' });
     }
 
-    await cloudinary.uploader.destroy(image.publicId);
-    image.remove();
+    try {
+      await cloudinary.uploader.destroy(image.publicId);
+      console.log(`🗑️ Deleted Cloudinary image: ${image.publicId}`);
+    } catch (err) {
+      console.warn('Failed to delete image from cloudinary:', err.message);
+    }
+    
+    product.cloudinaryImages = product.cloudinaryImages.filter(img => img._id.toString() !== req.params.imageId);
+    if (image.url) {
+      product.images = product.images.filter(url => url !== image.url);
+    }
+    product.updatedAt = Date.now();
     await product.save();
 
+    console.log(`✅ Deleted image for product: ${product.name}`);
     res.json({ success: true });
   } catch (error) {
+    console.error('Delete product image error:', error);
     res.status(500).json({ error: error.message });
   }
 };

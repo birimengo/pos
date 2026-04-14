@@ -1,4 +1,3 @@
-// src/features/pos/context/CustomerContext.jsx
 import { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
 import { db } from '../services/database';
 import { useStore } from './StoreContext';
@@ -31,17 +30,7 @@ function customerReducer(state, action) {
     case 'ADD_CUSTOMER':
       return { 
         ...state, 
-        customers: [...state.customers, { 
-          ...action.payload, 
-          id: String(Date.now()),
-          joinDate: new Date().toISOString().split('T')[0],
-          lastVisit: new Date().toISOString().split('T')[0],
-          loyaltyPoints: 0,
-          totalSpent: 0,
-          transactionCount: 0,
-          creditCount: 0,
-          installmentCount: 0
-        }] 
+        customers: [...state.customers, action.payload] 
       };
     case 'UPDATE_CUSTOMER':
       return {
@@ -85,10 +74,10 @@ function customerReducer(state, action) {
 
 export function CustomerProvider({ children }) {
   const [state, dispatch] = useReducer(customerReducer, initialState);
-  const { activeStore, currentStoreId: activeStoreId } = useStore();
+  const { activeStore, currentStoreId: activeStoreId, loading: storeLoading } = useStore();
 
-  // Load customers for the current store
-  const loadCustomers = useCallback(async (storeId = null) => {
+  // Load customers for the current store - ONLY customers belonging to this store
+  const loadCustomers = useCallback(async (storeId = null, forceRefresh = false) => {
     const targetStoreId = storeId || activeStoreId || activeStore?.id;
     
     if (!targetStoreId) {
@@ -98,8 +87,8 @@ export function CustomerProvider({ children }) {
       return;
     }
     
-    // Don't reload if already loaded for this store
-    if (state.currentStoreId === targetStoreId && state.customers.length > 0 && !state.isLoading) {
+    // Don't reload if already loaded for this store and not forced
+    if (!forceRefresh && state.currentStoreId === targetStoreId && state.customers.length > 0 && !state.isLoading) {
       console.log(`📦 Using cached customers for store: ${targetStoreId}`);
       return;
     }
@@ -110,11 +99,20 @@ export function CustomerProvider({ children }) {
     try {
       await db.ensureInitialized();
       
-      // Get customers filtered by store from IndexedDB
+      // Get all customers and filter by storeId
       const allCustomers = await db.getAll('customers');
-      const storeCustomers = allCustomers.filter(c => 
-        String(c.storeId) === String(targetStoreId)
-      );
+      
+      // Get store IDs for matching (both local ID and MongoDB ID)
+      const targetStoreIdStr = String(targetStoreId);
+      const targetStoreCloudId = String(activeStore?._id || activeStore?.cloudId || '');
+      
+      // Filter customers that belong to this store
+      const storeCustomers = allCustomers.filter(c => {
+        const customerStoreId = String(c.storeId || '');
+        return customerStoreId === targetStoreIdStr || 
+               customerStoreId === targetStoreCloudId ||
+               (c.storeCloudId && String(c.storeCloudId) === targetStoreCloudId);
+      });
       
       if (storeCustomers && storeCustomers.length > 0) {
         const normalizedCustomers = storeCustomers.map(c => ({
@@ -122,24 +120,25 @@ export function CustomerProvider({ children }) {
           id: String(c.id),
           totalSpent: c.totalSpent || 0,
           transactionCount: c.transactionCount || 0,
-          loyaltyPoints: c.loyaltyPoints || 0
+          loyaltyPoints: c.loyaltyPoints || 0,
+          storeId: c.storeId // Keep storeId for reference
         }));
         dispatch({ 
           type: 'SET_CUSTOMERS', 
           payload: normalizedCustomers,
           storeId: targetStoreId
         });
-        console.log(`✅ Loaded ${normalizedCustomers.length} customers for store ${targetStoreId}`);
+        console.log(`✅ Loaded ${normalizedCustomers.length} customers for store ${activeStore?.name || targetStoreId}`);
       } else {
         dispatch({ 
           type: 'SET_CUSTOMERS', 
           payload: [],
           storeId: targetStoreId
         });
-        console.log(`📭 No customers found for store ${targetStoreId}`);
+        console.log(`📭 No customers found for store ${activeStore?.name || targetStoreId}`);
       }
       
-      // Also save to localStorage with store-specific key for backup
+      // Save to localStorage with store-specific key for backup
       if (storeCustomers.length > 0) {
         const backupKey = `pos-customers-${targetStoreId}`;
         localStorage.setItem(backupKey, JSON.stringify(storeCustomers));
@@ -154,7 +153,9 @@ export function CustomerProvider({ children }) {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          const normalized = parsed.map(c => ({ ...c, id: String(c.id) }));
+          // Filter by storeId again for safety
+          const filtered = parsed.filter(c => String(c.storeId) === String(targetStoreId));
+          const normalized = filtered.map(c => ({ ...c, id: String(c.id) }));
           dispatch({ 
             type: 'SET_CUSTOMERS', 
             payload: normalized,
@@ -172,14 +173,21 @@ export function CustomerProvider({ children }) {
 
   // Load customers when store changes
   useEffect(() => {
+    // Wait for store to be ready
+    if (storeLoading) {
+      console.log('⏳ Store context still loading, waiting for store...');
+      return;
+    }
+    
     const storeId = activeStoreId || activeStore?.id;
     if (storeId) {
-      loadCustomers(storeId);
+      // Force refresh when store changes to ensure clean data
+      loadCustomers(storeId, true);
     } else {
       dispatch({ type: 'CLEAR_CUSTOMERS' });
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  }, [activeStoreId, activeStore, loadCustomers]);
+  }, [activeStoreId, activeStore, storeLoading, loadCustomers]);
 
   // Listen for store switch events
   useEffect(() => {
@@ -187,7 +195,9 @@ export function CustomerProvider({ children }) {
       console.log('🔄 Store switched, reloading customers for new store...', event.detail);
       const newStoreId = event.detail?.storeId || event.detail?.store?._id;
       if (newStoreId) {
-        loadCustomers(newStoreId);
+        // Clear current customers before loading new ones
+        dispatch({ type: 'CLEAR_CUSTOMERS' });
+        loadCustomers(newStoreId, true);
       }
     };
 
@@ -195,7 +205,9 @@ export function CustomerProvider({ children }) {
       console.log('🔄 Refresh customers requested');
       const storeId = activeStoreId || activeStore?.id;
       if (storeId) {
-        loadCustomers(storeId);
+        // Force refresh by clearing cache
+        dispatch({ type: 'CLEAR_CUSTOMERS' });
+        loadCustomers(storeId, true);
       }
     };
 
@@ -214,7 +226,8 @@ export function CustomerProvider({ children }) {
       console.log('🔄 Cloud data restored, reloading customers...', event.detail);
       const storeId = activeStoreId || activeStore?.id;
       if (storeId) {
-        await loadCustomers(storeId);
+        dispatch({ type: 'CLEAR_CUSTOMERS' });
+        await loadCustomers(storeId, true);
       }
     };
 
@@ -245,15 +258,20 @@ export function CustomerProvider({ children }) {
       ...customerData,
       id: String(Date.now()),
       storeId: storeId,
+      storeCloudId: activeStore?._id || activeStore?.cloudId,
       joinDate: new Date().toISOString().split('T')[0],
       lastVisit: new Date().toISOString().split('T')[0],
       loyaltyPoints: 0,
       totalSpent: 0,
+      totalPaid: 0,
+      totalOutstanding: 0,
       transactionCount: 0,
       creditCount: 0,
       installmentCount: 0,
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      synced: false,
+      syncRequired: true
     };
     
     dispatch({ type: 'ADD_CUSTOMER', payload: newCustomer });
@@ -268,7 +286,8 @@ export function CustomerProvider({ children }) {
   const refreshCustomers = useCallback(() => {
     const storeId = activeStoreId || activeStore?.id;
     if (storeId) {
-      loadCustomers(storeId);
+      dispatch({ type: 'CLEAR_CUSTOMERS' });
+      loadCustomers(storeId, true);
     }
   }, [activeStoreId, activeStore, loadCustomers]);
 

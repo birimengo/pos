@@ -1,4 +1,3 @@
-// backend/models/Product.js
 import mongoose from 'mongoose';
 
 const productSchema = new mongoose.Schema({
@@ -23,17 +22,16 @@ const productSchema = new mongoose.Schema({
     isMain: { type: Boolean, default: false }
   }],
   storeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', required: true, index: true },
-  storeSpecific: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
 
 // Compound unique index for SKU per store
 productSchema.index({ sku: 1, storeId: 1 }, { unique: true });
+productSchema.index({ storeId: 1, category: 1 });
+productSchema.index({ storeId: 1, createdAt: -1 });
 
-productSchema.pre('save', function() {
-  this.updatedAt = Date.now();
-});
+// NO pre-save middleware - we'll handle updatedAt in the controller
 
 const Product = mongoose.model('Product', productSchema);
 export default Product;

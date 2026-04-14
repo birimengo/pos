@@ -1,2 +1,4 @@
 
-declare interface queryType {}
+declare interface productDataType {}
+
+declare interface updateDataType {}

@@ -63,22 +63,14 @@ class ProductService {
       return { success: false, error: 'No store selected. Please select a store first.' };
     }
     
-    // Check if store has MongoDB ID (must be a valid ObjectId format)
     let storeMongoId = currentStore._id || currentStore.cloudId;
-    
-    // Validate if it's a proper MongoDB ObjectId (24 hex characters)
     const isValidObjectId = storeMongoId && /^[0-9a-fA-F]{24}$/.test(storeMongoId);
     
     if (!storeMongoId || !isValidObjectId) {
-      console.log('⚠️ Store has no valid MongoDB ID, attempting to sync store first...');
-      
-      // If store has no MongoDB ID, we can't sync products
-      // This will happen if store was created locally but not yet synced
-      // In this case, we'll just skip sync and mark product as pending
-      console.log('📝 Store needs to be synced to cloud first. Product will be synced later.');
+      console.log('⚠️ Store has no valid MongoDB ID. Product will be synced later.');
       return { 
         success: false, 
-        error: 'Store not synced to cloud yet. Product will sync automatically when store is ready.',
+        error: 'Store not synced to cloud yet.',
         skip: true
       };
     }
@@ -101,8 +93,6 @@ class ProductService {
       await db.ensureInitialized();
       
       const productId = productData.id || `prod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      // Get current store ID (local ID, not MongoDB ID yet)
       const currentStoreId = db.getCurrentStore();
       
       const product = {
@@ -431,10 +421,8 @@ class ProductService {
         throw new Error(`Product ${productId} not found locally`);
       }
 
-      // Ensure store is synced and get MongoDB ID
       const storeSyncResult = await this.ensureStoreSynced();
       if (!storeSyncResult.success) {
-        // If store is not synced, keep product in queue for later
         console.log('⏳ Store not synced yet, keeping product in queue for later sync');
         return { 
           success: false, 
@@ -449,7 +437,7 @@ class ProductService {
         console.error('❌ Invalid store MongoDB ID:', storeMongoId);
         return { 
           success: false, 
-          error: 'Invalid store MongoDB ID. Please refresh and try again.',
+          error: 'Invalid store MongoDB ID.',
           skip: true,
           keepInQueue: true
         };
@@ -461,6 +449,7 @@ class ProductService {
       const uploadedImages = [];
       const failedImages = [...(product.failedImages || [])];
       
+      // Upload local images to cloudinary
       if (product.localImages?.length > 0) {
         console.log(`📸 Found ${product.localImages.length} local images to upload`);
         
@@ -546,6 +535,9 @@ class ProductService {
         }
       }
 
+      // CRITICAL FIX: Separate images into URL strings array and cloudinaryImages objects array
+      const imageUrls = cloudImages.map(img => img.url);
+      
       const productData = {
         name: product.name,
         sku: product.sku,
@@ -558,26 +550,61 @@ class ProductService {
         location: product.location,
         reorderPoint: product.reorderPoint,
         description: product.description,
-        cloudinaryImages: cloudImages,
+        images: imageUrls,  // Array of URL strings (for simple image URLs)
+        cloudinaryImages: cloudImages,  // Array of objects (for detailed Cloudinary data)
         cloudMainImage: cloudImages.find(img => img.isMain)?.url || cloudImages[0]?.url,
-        uploadedImages: uploadedImages.map(img => img.cloudData.url),
         storeId: storeMongoId,
         updatedAt: new Date().toISOString()
       };
 
       console.log('📤 Sending to MongoDB with storeId:', storeMongoId);
+      console.log('📸 Images data:', { imageUrlsCount: imageUrls.length, cloudImagesCount: cloudImages.length });
 
       let mongoResult;
-      if (product._id) {
-        mongoResult = await api.updateProduct(product._id, productData);
-      } else {
+      let isNewProduct = false;
+      
+      // FIRST: Try to find existing product by SKU
+      try {
+        console.log(`🔍 Checking if product exists in cloud by SKU: ${product.sku}`);
+        const allProductsResult = await api.getAllProducts();
+        if (allProductsResult.success && allProductsResult.products) {
+          const existingProduct = allProductsResult.products.find(p => p.sku === product.sku);
+          if (existingProduct && existingProduct._id) {
+            console.log(`✅ Found existing product in cloud by SKU: ${existingProduct._id}`);
+            mongoResult = await api.updateProduct(existingProduct._id, productData);
+          }
+        }
+      } catch (error) {
+        console.log('⚠️ Could not check existing product by SKU:', error.message);
+      }
+      
+      // SECOND: If not found by SKU, try by cloud ID
+      if (!mongoResult && product._id) {
+        try {
+          console.log(`🔍 Checking if product exists in cloud by ID: ${product._id}`);
+          const checkResult = await api.getProduct(product._id);
+          if (checkResult.success && checkResult.product) {
+            console.log(`✅ Found existing product in cloud by ID: ${product._id}`);
+            mongoResult = await api.updateProduct(product._id, productData);
+          }
+        } catch (error) {
+          console.log(`⚠️ Product not found by ID: ${product._id}, will create new`);
+        }
+      }
+      
+      // THIRD: Create new product
+      if (!mongoResult) {
+        console.log(`➕ Creating new product in cloud: ${product.name}`);
         mongoResult = await api.createProduct(productData);
+        isNewProduct = true;
       }
 
       if (mongoResult.success) {
+        const cloudProduct = mongoResult.product;
         const updatedProduct = {
           ...product,
-          _id: mongoResult.product._id,
+          _id: cloudProduct._id,
+          cloudId: cloudProduct._id,
           cloudImages,
           cloudMainImage: cloudImages.find(img => img.isMain)?.url || cloudImages[0]?.url,
           localImages: [],
@@ -591,7 +618,7 @@ class ProductService {
         
         await db.saveProduct(updatedProduct);
         
-        console.log(`✅ Product ${product.name} synced to cloud with ${cloudImages.length} images for store ${storeMongoId}`);
+        console.log(`✅ Product ${product.name} ${isNewProduct ? 'created' : 'updated'} in cloud with ${cloudImages.length} images for store ${storeMongoId}`);
         if (failedImages.length > 0) {
           console.log(`⚠️ ${failedImages.length} images failed to upload`);
         }
@@ -600,7 +627,8 @@ class ProductService {
           success: true, 
           product: updatedProduct,
           uploadedCount: cloudImages.length - (product.cloudImages?.length || 0),
-          failedCount: failedImages.length
+          failedCount: failedImages.length,
+          isNew: isNewProduct
         };
       } else {
         throw new Error(mongoResult.error || 'Failed to save to MongoDB');
@@ -693,7 +721,6 @@ class ProductService {
               uploadedTotal += result.uploadedCount || 0;
               failedTotal += result.failedCount || 0;
             } else if (result.keepInQueue) {
-              // Keep item in queue for later
               itemsToKeep.push(item);
             }
             results.push({ item, ...result });

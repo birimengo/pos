@@ -1,8 +1,7 @@
-// src/features/pos/checkout/CustomerModal.jsx
-
 import { useState, useEffect } from 'react';
 import { useTheme } from '../../../context/ThemeContext';
 import { useCustomers } from '../context/CustomerContext';
+import { useStore } from '../context/StoreContext';
 import { Icons } from '../../../components/ui/Icons';
 import { customerService } from '../services/customerService';
 
@@ -20,6 +19,7 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
 
   const { theme, getTheme } = useTheme();
   const { state, dispatch } = useCustomers();
+  const { activeStore } = useStore();
   const currentTheme = getTheme(theme);
 
   // Reset form when modal opens
@@ -33,10 +33,19 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
 
   if (!isOpen) return null;
 
-  // Ensure unique customers by ID
+  // Get current store ID for filtering
+  const currentStoreId = activeStore?.id;
+  const currentStoreCloudId = activeStore?._id || activeStore?.cloudId;
+
+  // Ensure unique customers by ID and filter by current store
   const uniqueCustomers = Array.from(
     new Map(state.customers.map(c => [String(c.id), c])).values()
-  );
+  ).filter(c => {
+    const customerStoreId = String(c.storeId || '');
+    return customerStoreId === String(currentStoreId) || 
+           customerStoreId === String(currentStoreCloudId) ||
+           (c.storeCloudId && String(c.storeCloudId) === String(currentStoreCloudId));
+  });
 
   const filteredCustomers = uniqueCustomers.filter(c =>
     c.name.toLowerCase().includes(state.searchTerm.toLowerCase()) ||
@@ -45,34 +54,36 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
   );
 
   const handleSelectCustomer = (customer) => {
-    // Ensure customer has string ID
+    // Ensure customer has string ID and store info
     const customerToSelect = {
       ...customer,
-      id: String(customer.id)
+      id: String(customer.id),
+      storeId: currentStoreId,
+      storeCloudId: currentStoreCloudId
     };
     onSelect(customerToSelect);
     onClose();
   };
 
   const checkExistingCustomer = async () => {
-    // Check by email
+    // Check by email within same store
     if (formData.email) {
       const existingByEmail = uniqueCustomers.find(c => 
         c.email && c.email.toLowerCase() === formData.email.toLowerCase()
       );
       if (existingByEmail) {
-        setDuplicateError(`Customer with email "${formData.email}" already exists. Please select them instead.`);
+        setDuplicateError(`Customer with email "${formData.email}" already exists in this store. Please select them instead.`);
         return existingByEmail;
       }
     }
 
-    // Check by phone
+    // Check by phone within same store
     if (formData.phone) {
       const existingByPhone = uniqueCustomers.find(c => 
         c.phone && c.phone === formData.phone
       );
       if (existingByPhone) {
-        setDuplicateError(`Customer with phone "${formData.phone}" already exists. Please select them instead.`);
+        setDuplicateError(`Customer with phone "${formData.phone}" already exists in this store. Please select them instead.`);
         return existingByPhone;
       }
     }
@@ -90,11 +101,10 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
     setDuplicateError('');
 
     try {
-      // Check for existing customer
+      // Check for existing customer in this store
       const existingCustomer = await checkExistingCustomer();
       
       if (existingCustomer) {
-        // Offer to select existing customer
         const confirmSelect = window.confirm(
           `${duplicateError}\n\nWould you like to select this customer instead?`
         );
@@ -105,12 +115,16 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
         return;
       }
 
-      // Create new customer with string ID
+      // Create new customer with current store ID
       const newCustomer = {
         ...formData,
         id: String(Date.now()),
+        storeId: currentStoreId,
+        storeCloudId: currentStoreCloudId,
         loyaltyPoints: 0,
         totalSpent: 0,
+        totalPaid: 0,
+        totalOutstanding: 0,
         joinDate: new Date().toISOString().split('T')[0],
         lastVisit: new Date().toISOString().split('T')[0],
         transactionCount: 0,
@@ -118,14 +132,14 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
         installmentCount: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        synced: false
+        synced: false,
+        syncRequired: true
       };
 
       // Save to database first
       const result = await customerService.saveCustomerLocally(newCustomer);
       
       if (result.success) {
-        // Update context with the saved customer (which has the correct ID)
         const savedCustomer = result.customer;
         dispatch({ type: 'ADD_CUSTOMER', payload: savedCustomer });
         onSelect(savedCustomer);
@@ -156,6 +170,15 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
           </button>
         </div>
 
+        {/* Store Info Bar */}
+        {activeStore && (
+          <div className={`px-4 py-2 text-xs ${currentTheme.colors.accentLight} border-b ${currentTheme.colors.border} flex items-center gap-2`}>
+            <Icons.store className="text-xs" />
+            <span>Store: {activeStore.name}</span>
+            <span className="text-[10px] text-gray-500">Customers are specific to this store only</span>
+          </div>
+        )}
+
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-4">
           {view === 'list' && (
@@ -170,6 +193,11 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                   onChange={(e) => dispatch({ type: 'SET_SEARCH_TERM', payload: e.target.value })}
                   className={`w-full pl-10 pr-4 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text}`}
                 />
+              </div>
+
+              {/* Customer Count */}
+              <div className="mb-3 text-xs text-gray-500">
+                {filteredCustomers.length} customer(s) in this store
               </div>
 
               {/* Customer List */}
@@ -203,7 +231,10 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                   <div className="text-center py-8">
                     <Icons.users className={`text-3xl mx-auto mb-2 ${currentTheme.colors.textMuted}`} />
                     <p className={`text-sm ${currentTheme.colors.textMuted}`}>
-                      {state.searchTerm ? 'No customers found' : 'No customers yet'}
+                      {state.searchTerm ? 'No customers found' : 'No customers in this store yet'}
+                    </p>
+                    <p className={`text-xs ${currentTheme.colors.textMuted} mt-1`}>
+                      Add a customer to start tracking their purchases
                     </p>
                   </div>
                 )}
@@ -214,7 +245,7 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                 onClick={() => setView('add')}
                 className={`w-full mt-4 p-3 border border-dashed ${currentTheme.colors.border} rounded-lg text-center ${currentTheme.colors.hover} transition-all`}
               >
-                <Icons.add className="inline mr-2" /> Add New Customer
+                <Icons.add className="inline mr-2" /> Add New Customer to {activeStore?.name}
               </button>
             </>
           )}
@@ -238,6 +269,10 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                 </div>
               )}
               
+              <div className={`p-2 rounded-lg ${currentTheme.colors.accentLight} text-center text-xs`}>
+                Adding customer to: <strong>{activeStore?.name}</strong>
+              </div>
+              
               <div>
                 <label className={`text-sm ${currentTheme.colors.textSecondary} block mb-1`}>
                   Name <span className="text-red-500">*</span>
@@ -260,7 +295,7 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                   className={`w-full px-3 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} focus:outline-none focus:ring-2 focus:ring-blue-500`}
                   placeholder="customer@example.com"
                 />
-                <p className="text-xs text-gray-500 mt-1">Email must be unique</p>
+                <p className="text-xs text-gray-500 mt-1">Email must be unique within this store</p>
               </div>
               
               <div>
@@ -272,7 +307,7 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                   className={`w-full px-3 py-2 rounded-lg border ${currentTheme.colors.border} ${currentTheme.colors.bgSecondary} ${currentTheme.colors.text} focus:outline-none focus:ring-2 focus:ring-blue-500`}
                   placeholder="+1 234 567 8900"
                 />
-                <p className="text-xs text-gray-500 mt-1">Phone number must be unique</p>
+                <p className="text-xs text-gray-500 mt-1">Phone number must be unique within this store</p>
               </div>
               
               <div>
@@ -320,7 +355,7 @@ export default function CustomerModal({ isOpen, onClose, onSelect }) {
                   Adding...
                 </span>
               ) : (
-                'Add Customer'
+                `Add Customer to ${activeStore?.name || 'Store'}`
               )}
             </button>
           )}
